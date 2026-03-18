@@ -15,8 +15,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 from config import BBDOWN_PATH, DATA_DIR, is_admin
-from database import add_subscription, remove_subscription, get_user_subscriptions, Subscription
+from database import (
+    add_subscription, remove_subscription, get_user_subscriptions, Subscription,
+    get_videos_by_uid, count_videos_by_uid, get_unparsed_videos,
+)
 from bilibili_api import get_up_info, get_up_videos
+from bbdown_fetcher import fetch_all_video_urls, parse_pending_videos
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -220,17 +224,37 @@ async def cb_sub_detail(callback: types.CallbackQuery):
     if not sub:
         await callback.answer("未找到该订阅", show_alert=True)
         return await cb_subs_list(callback)
-        
+
     name_disp = sub.up_name if sub.up_name else "Unknown"
     kw_disp = sub.keyword if sub.keyword else "全部内容 (无过滤)"
-    
+
+    # Check local BBDown cache
+    cached_count = await count_videos_by_uid(uid)
+
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="📺 查看Ta发布的近期视频", callback_data=f"sub_v_p_{uid}_1"))
+    builder.row(InlineKeyboardButton(text="📺 查看近期视频 (Bilibili API)", callback_data=f"sub_v_p_{uid}_1"))
+    if cached_count > 0:
+        builder.row(InlineKeyboardButton(
+            text=f"🗂️ 浏览本地视频列表 ({cached_count} 个)",
+            callback_data=f"sub_v_full_{uid}_1"
+        ))
+    builder.row(InlineKeyboardButton(
+        text="📦 用 BBDown 抓取全部视频列表",
+        callback_data=f"sub_fetch_full_{uid}"
+    ))
     builder.row(InlineKeyboardButton(text="📝 修改关键词过滤", callback_data=f"sub_editkw_{uid}"))
     builder.row(InlineKeyboardButton(text="🗑️ 删除此订阅", callback_data=f"sub_del_{uid}"))
     builder.row(InlineKeyboardButton(text="🔙 返回订阅列表", callback_data="set_subs_list"))
-    
-    text = f"👤 **订阅详情**\n\n**UP主**: {name_disp}\n**UID**: `{uid}`\n**触发关键词**: {kw_disp}\n\n*机器每 30 分钟后台轮询一次*"
+
+    cache_note = f"\n📦 本地已缓存 **{cached_count}** 个视频" if cached_count > 0 else "\n📦 尚未抓取本地缓存"
+    text = (
+        f"👤 **订阅详情**\n\n"
+        f"**UP主**: {name_disp}\n"
+        f"**UID**: `{uid}`\n"
+        f"**触发关键词**: {kw_disp}"
+        f"{cache_note}\n\n"
+        f"*机器每 30 分钟后台轮询一次*"
+    )
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("sub_del_"))
@@ -279,7 +303,157 @@ async def process_sub_editkw(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 查看该订阅", callback_data=f"sub_detail_{uid}"))
     await message.answer(f"✅ 更新成功！当前触发关键词： {kw}", reply_markup=builder.as_markup())
 
-# --- UP Video Pagination Flow ---
+# --- Full Video List (BBDown local cache) ---
+
+async def show_full_video_list(
+    msg_obj: types.Message,
+    uid: str,
+    up_name: str,
+    page: int,
+    is_edit: bool = False,
+):
+    """Display paginated video list from the local up_videos DB cache."""
+    PAGE_SIZE = 8
+    videos = await get_videos_by_uid(uid, page=page, page_size=PAGE_SIZE)
+    total = await count_videos_by_uid(uid)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    builder = InlineKeyboardBuilder()
+    if not videos:
+        txt = (
+            f"🗂️ **{up_name} 本地视频列表** (第 {page} 页)\n\n"
+            f"❌ 此页暂无数据，请先点击「抓取全部视频列表」按鈕。"
+        )
+    else:
+        global_start = (page - 1) * PAGE_SIZE + 1
+        title_lines = ""
+        for idx, v in enumerate(videos):
+            seq = global_start + idx
+            display_title = v.title if v.title else f"[待解析] {v.bvid}"
+            title_lines += f"`{seq}.` {display_title}\n"
+            short = display_title[:22] + ("…" if len(display_title) > 22 else "")
+            builder.row(InlineKeyboardButton(
+                text=f"{seq}. {short}",
+                callback_data=f"directdl_{v.bvid}"
+            ))
+        txt = (
+            f"🗂️ **{up_name} 的全部投稿** (第 {page}/{total_pages} 页，共 {total} 个)\n"
+            f"*点击视频序号按钮即可开始下载*\n\n"
+            f"{title_lines}"
+        )
+
+    # Navigation row
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ 上一页", callback_data=f"sub_v_full_{uid}_{page - 1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="下一页 ➡️", callback_data=f"sub_v_full_{uid}_{page + 1}"))
+    if nav_row:
+        builder.row(*nav_row)
+    builder.row(InlineKeyboardButton(text="📦 重新抓取/刷新列表", callback_data=f"sub_fetch_full_{uid}"))
+    builder.row(InlineKeyboardButton(text="🔙 返回订阅详情", callback_data=f"sub_detail_{uid}"))
+
+    if is_edit:
+        await msg_obj.edit_text(txt, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await msg_obj.answer(txt, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("sub_v_full_"))
+async def cb_sub_v_full(callback: types.CallbackQuery):
+    """Pagination handler for the local (BBDown-cached) full video list."""
+    # Format: sub_v_full_{uid}_{page}
+    parts = callback.data.split("_")
+    uid = parts[3]
+    page = int(parts[4])
+
+    subs = await get_user_subscriptions(callback.from_user.id)
+    sub = next((s for s in subs if s.uid == uid), None)
+    up_name = sub.up_name if sub and sub.up_name else f"UID {uid}"
+
+    await callback.answer()
+    await show_full_video_list(callback.message, uid, up_name, page, is_edit=True)
+
+
+@router.callback_query(F.data.startswith("sub_fetch_full_"))
+async def cb_sub_fetch_full(callback: types.CallbackQuery):
+    """Trigger BBDown to fetch all video URLs then parse titles for a UP master."""
+    uid = callback.data.replace("sub_fetch_full_", "")
+
+    subs = await get_user_subscriptions(callback.from_user.id)
+    sub = next((s for s in subs if s.uid == uid), None)
+    up_name = sub.up_name if sub and sub.up_name else f"UID {uid}"
+
+    await callback.answer("开始后台抓取，请稍候...", show_alert=False)
+    status_msg = await callback.message.answer(
+        f"📦 **正在用 BBDown 扫描 {up_name} 的全部投稿视频**\n"
+        f"UID: `{uid}`\n\n"
+        f"⏳ 正在枚举视频 URL，时间取决于视频数量，请耐心等待…",
+        parse_mode="Markdown"
+    )
+
+    # Step 1: Fetch all URLs via BBDown -po -p ALL
+    async def url_status(msg: str):
+        try:
+            await status_msg.edit_text(msg, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    new_count = await fetch_all_video_urls(uid, status_callback=url_status)
+
+    # Step 2: Parse pending titles
+    unparsed = await get_unparsed_videos(uid, limit=500)
+    pending_total = len(unparsed)
+
+    if pending_total > 0:
+        try:
+            await status_msg.edit_text(
+                f"✅ URL 枚举完毕，新增 **{new_count}** 条。\n"
+                f"⚙️ 开始解析视频标题（共 **{pending_total}** 条待解析），每条约需 2-5 秒…",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        async def parse_status(done: int, total: int):
+            pct = done * 100 // total
+            bar_filled = int(done * 20 // total)
+            bar = "▓" * bar_filled + "░" * (20 - bar_filled)
+            try:
+                await status_msg.edit_text(
+                    f"⚙️ **正在解析视频标题**\n"
+                    f"进度: `{done}/{total}` 条\n"
+                    f"`{bar}` {pct}%",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+        parsed = await parse_pending_videos(uid, status_callback=parse_status)
+
+        try:
+            await status_msg.edit_text(
+                f"🎉 **抓取解析完毕！**\n"
+                f"新增 URL: **{new_count}** 条 | 成功解析标题: **{parsed}** 条\n\n"
+                f"正在载入视频列表…",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await status_msg.edit_text(
+                f"✅ **扫描完毕！**\n新增 **{new_count}** 条 URL，所有视频均已解析。\n\n正在载入视频列表…",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    # Show the paginated list
+    await show_full_video_list(status_msg, uid, up_name, page=1, is_edit=True)
+
+
+# --- UP Video Pagination Flow (Bilibili API) ---
 async def show_up_videos_gui(msg_obj: types.Message, uid: str, up_name: str, page: int, is_edit: bool = False):
     loading_text = f"🔄 正在向 B 站请求 {up_name} 的第 {page} 页视频..."
     if is_edit:

@@ -24,47 +24,66 @@ async def check_subscriptions(bot: Bot):
     if not subs:
         return
 
-    # Use bilibili API to get user's recent videos
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    
+
     async with httpx.AsyncClient(headers=headers) as client:
         for sub in subs:
-            # Bilibili API to get videos by UP
-            url = f"https://api.bilibili.com/x/space/wbi/arc/search?mid={sub.uid}&ps=5&tid=0&pn=1"
             try:
-                # Note: Bilibili WBI signing might block raw API calls without proper headers/cookies.
-                # For a robust approach, you'd need a WBI signing algorithm. Let's use RSS as fallback if API fails
-                # or just use the generic API.
+                # --- Strategy 1: Use local up_videos cache (populated via BBDown fetch) ---
+                from database import get_recent_videos_by_uid
+                recent_local = await get_recent_videos_by_uid(sub.uid, limit=10)
+
+                if recent_local:
+                    for video in recent_local:
+                        bvid = video.bvid
+                        title = video.title or ""
+
+                        if await is_bvid_downloaded(bvid):
+                            continue
+
+                        # Apply keyword filter
+                        if sub.keyword:
+                            filter_keys = [k.strip().lower() for k in sub.keyword.replace('，', ',').split(',') if k.strip()]
+                            if filter_keys and not any(k in title.lower() for k in filter_keys):
+                                continue
+
+                        logger.info(f"[Local cache] New video for {sub.uid}: {title} ({bvid})")
+                        await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
+                        await asyncio.sleep(5)
+                    continue  # Skip WBI API for this sub since we have local cache
+
+                # --- Strategy 2: Fall back to Bilibili WBI API ---
+                url = f"https://api.bilibili.com/x/space/wbi/arc/search?mid={sub.uid}&ps=5&tid=0&pn=1"
                 resp = await client.get(url, timeout=10.0)
                 data = resp.json()
-                
+
                 if data.get('code') != 0:
                     logger.error(f"Failed to fetch videos for {sub.uid}: {data.get('message')}")
                     continue
-                    
+
                 vlist = data['data']['list']['vlist']
-                
                 for video in vlist:
                     bvid = video['bvid']
                     title = video['title']
-                    
+
                     if await is_bvid_downloaded(bvid):
                         continue
-                        
-                    # Check keyword
+
+                    # Apply keyword filter
                     if sub.keyword:
                         filter_keys = [k.strip().lower() for k in sub.keyword.replace('，', ',').split(',') if k.strip()]
                         if filter_keys and not any(k in title.lower() for k in filter_keys):
                             continue
-                        
-                    logger.info(f"New video found for {sub.uid}: {title} ({bvid})")
+
+                    logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
                     await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
-                    await asyncio.sleep(5)  # Avoid rate limiting
-                    
+                    await asyncio.sleep(5)
+
             except Exception as e:
                 logger.error(f"Error checking sub {sub.uid}: {e}")
+
 
 async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):
     video_url = f"https://www.bilibili.com/video/{bvid}"
