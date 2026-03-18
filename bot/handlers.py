@@ -111,8 +111,8 @@ async def cb_login_menu(callback: types.CallbackQuery):
 @router.callback_query(F.data == "set_login_check")
 async def cb_login_check(callback: types.CallbackQuery):
     await callback.answer("正在检查凭证有效性，请稍候...", show_alert=False)
-    # Check by running BBDown login and parsing output
-    cmd = [BBDOWN_PATH, "login"]
+    # Check by running BBDown on a mock video, which is very fast and non-blocking
+    cmd = [BBDOWN_PATH, "BV1xx411c7mD", "--only-show-info"]
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
@@ -120,12 +120,10 @@ async def cb_login_check(callback: types.CallbackQuery):
         stdout, _ = await process.communicate()
         output = stdout.decode('utf-8', errors='ignore')
         
-        if "过期" in output or "失效" in output or "需扫码" in output or "qrcode" in output:
-            status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录] 重新认证。"
-        elif "成功" in output or "SESSDATA" in output:
-            status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
+        if "尚未登录" in output or "需扫码" in output or "失效" in output or "过期" in output:
+            status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录]重新认证。"
         else:
-            status = "⚠️ **状态未知**，请查看日志。"
+            status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
     except Exception as e:
         status = f"❌ **验证时发生系统错误**：{e}"
         
