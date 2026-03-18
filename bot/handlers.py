@@ -36,6 +36,26 @@ def create_progress_bar(percentage: float, length: int = 15) -> str:
     empty = length - filled
     return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"
 
+@router.message(Command("help"))
+async def cmd_help(message: types.Message):
+    help_text = (
+        "📖 **BBDown Telegram Bot 使用帮助**\n\n"
+        "**1. 账号登录（必须）**\n"
+        "输入 `/login` 并在 B站 App 中扫描弹出的二维码登录。这是下载高画质视频的必要步骤。\n\n"
+        "**2. 如何下载视频？**\n"
+        "- **直接发送链接**：将 B站的视频链接（支持 b23.tv 短链）直接发送给机器人，会自动解析。\n"
+        "- **使用命令**：输入 `/url` 后根据提示输入链接。\n\n"
+        "**3. 自动订阅 UP 主**\n"
+        "- **订阅**：输入 `/subscribe <UID> [关键词]`（例如 `/subscribe 123456 测试`），机器人会每隔 30 分钟后台检测新视频并静默下载推送。\n"
+        "- **退订**：输入 `/unsubscribe <UID>`，或直接输入 `/unsubscribe` 查看当前列表。\n\n"
+        "💡 *本机器人基于强大开源项目 [BBDown](https://github.com/nilaoda/BBDown) 驱动。*"
+    )
+    await message.answer(help_text, parse_mode="Markdown", disable_web_page_preview=True)
+
+@router.message(Command("url"))
+async def cmd_url(message: types.Message):
+    await message.answer("🔗 请直接发送你需要下载的 Bilibili 视频链接，例如：\n`https://www.bilibili.com/video/BV1xx411c7mD`\n或分享短链 `https://b23.tv/...`", parse_mode="Markdown")
+
 @router.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
     # /subscribe UID [keyword]

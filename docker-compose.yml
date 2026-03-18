@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: bbdown-telegram-bot-api
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
+      TELEGRAM_LOCAL: 1
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "8081:8081"
+
+  bbdown-bot:
+    build: .
+    container_name: bbdown-bot
+    restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_ID=${ADMIN_ID}
+      - API_URL=http://telegram-bot-api:8081
+      - BBDOWN_PATH=/usr/local/bin/BBDown
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
+
+volumes:
+  telegram-bot-api-data:
