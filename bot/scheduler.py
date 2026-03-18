@@ -54,19 +54,22 @@ async def check_subscriptions(bot: Bot):
                         continue
                         
                     # Check keyword
-                    if sub.keyword and sub.keyword.lower() not in title.lower():
-                        continue
+                    if sub.keyword:
+                        filter_keys = [k.strip().lower() for k in sub.keyword.replace('，', ',').split(',') if k.strip()]
+                        if filter_keys and not any(k in title.lower() for k in filter_keys):
+                            continue
                         
                     logger.info(f"New video found for {sub.uid}: {title} ({bvid})")
-                    await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title)
+                    await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
                     await asyncio.sleep(5)  # Avoid rate limiting
                     
             except Exception as e:
                 logger.error(f"Error checking sub {sub.uid}: {e}")
 
-async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str):
+async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):
     video_url = f"https://www.bilibili.com/video/{bvid}"
-    msg = await bot.send_message(chat_id, f"Auto-download triggered for new video: **{title}**\nStarting download...", parse_mode="Markdown")
+    up_display = f" ({up_name})" if up_name else ""
+    msg = await bot.send_message(chat_id, f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...", parse_mode="Markdown")
     
     dl_dir = Path(DATA_DIR) / "downloads" / "auto" / bvid
     dl_dir.mkdir(parents=True, exist_ok=True)

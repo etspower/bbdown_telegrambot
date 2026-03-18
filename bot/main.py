@@ -151,10 +151,10 @@ async def main():
     logger.info("Setting bot commands menu...")
     from aiogram.types import BotCommand
     commands = [
-        BotCommand(command="login", description="扫描二维码登录 B站 (必须)"),
-        BotCommand(command="url", description="输入 B站视频链接下载"),
-        BotCommand(command="subscribe", description="自动订阅并下载 UP 主的更新"),
-        BotCommand(command="help", description="查看使用帮助与说明")
+        BotCommand(command="settings", description="✨ 机器人控制面板 (推荐)"),
+        BotCommand(command="login", description="🔗 扫描二维码登录 B站 (必须)"),
+        BotCommand(command="url", description="📥 输入 B站视频链接下载"),
+        BotCommand(command="help", description="📖 查看使用帮助与说明")
     ]
     await bot.set_my_commands(commands)
     

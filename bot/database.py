@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import String, Integer, select, delete
+from sqlalchemy import String, Integer, select, delete, text
 from pathlib import Path
 
 from config import DATA_DIR
@@ -22,6 +22,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(50), nullable=False)
+    up_name: Mapped[str] = mapped_column(String(100), nullable=True)
     keyword: Mapped[str] = mapped_column(String(100), nullable=True)
     chat_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -35,17 +36,27 @@ class DownloadHistory(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Attempt to add up_name column safely if it doesn't exist
+        try:
+            await conn.execute(text("ALTER TABLE subscriptions ADD COLUMN up_name VARCHAR(100)"))
+        except Exception:
+            pass
 
-async def add_subscription(uid: str, chat_id: int, keyword: str = None) -> bool:
+async def add_subscription(uid: str, chat_id: int, keyword: str = None, up_name: str = None) -> bool:
     async with AsyncSessionLocal() as session:
         # Check if already exists
         result = await session.execute(
             select(Subscription).where(Subscription.uid == uid, Subscription.chat_id == chat_id)
         )
-        if result.scalar_one_or_none():
-            return False # Already subscribed
+        sub = result.scalar_one_or_none()
+        if sub:
+            # Update existing subscription
+            sub.keyword = keyword
+            sub.up_name = up_name
+            await session.commit()
+            return True
         
-        new_sub = Subscription(uid=uid, chat_id=chat_id, keyword=keyword)
+        new_sub = Subscription(uid=uid, chat_id=chat_id, keyword=keyword, up_name=up_name)
         session.add(new_sub)
         await session.commit()
         return True

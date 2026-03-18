@@ -15,7 +15,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 from config import BBDOWN_PATH, DATA_DIR, is_admin
-from database import add_subscription, remove_subscription, get_user_subscriptions
+from database import add_subscription, remove_subscription, get_user_subscriptions, Subscription
+from bilibili_api import get_up_info, get_up_videos
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -24,10 +25,15 @@ router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.fro
 URL_PATTERN = re.compile(r"(https?://(www\.)?(bilibili\.com|b23\.tv)/[^\s]+)")
 PROGRESS_PATTERN = re.compile(r"(\d+(\.\d+)?)%")
 
-# States for FSM
+# --- FSM States ---
 class DownloadFSM(StatesGroup):
     waiting_for_pages = State()
 
+class SubFSM(StatesGroup):
+    waiting_for_uid = State()
+    waiting_for_keywords = State()
+    waiting_for_edit_keywords = State()
+    
 # Temporary storage for video info per user
 user_sessions: Dict[int, dict] = {}
 
@@ -36,19 +42,22 @@ def create_progress_bar(percentage: float, length: int = 15) -> str:
     empty = length - filled
     return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"
 
+# ----------------------------
+# 1. Main Commands
+# ----------------------------
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     help_text = (
         "📖 **BBDown Telegram Bot 使用帮助**\n\n"
         "**1. 账号登录（必须）**\n"
-        "输入 `/login` 并在 B站 App 中扫描弹出的二维码登录。这是下载高画质视频的必要步骤。\n\n"
+        "发送 `/settings` 进入设置菜单 -> 登录管理 -> 触发登录验证。请使用 B站 App 扫描弹出的二维码登录。\n\n"
         "**2. 如何下载视频？**\n"
-        "- **直接发送链接**：将 B站的视频链接（支持 b23.tv 短链）直接发送给机器人，会自动解析。\n"
-        "- **使用命令**：输入 `/url` 后根据提示输入链接。\n\n"
-        "**3. 自动订阅 UP 主**\n"
-        "- **订阅**：输入 `/subscribe <UID> [关键词]`（例如 `/subscribe 123456 测试`），机器人会每隔 30 分钟后台检测新视频并静默下载推送。\n"
-        "- **退订**：输入 `/unsubscribe <UID>`，或直接输入 `/unsubscribe` 查看当前列表。\n\n"
-        "💡 *本机器人基于强大开源项目 [BBDown](https://github.com/nilaoda/BBDown) 驱动。*"
+        "- **直接发送链接**：将 B站视频链接（支持 b23.tv）直接发给机器人。\n"
+        "- **使用命令**：或发送 `/url` 后输入。\n\n"
+        "**3. 自动订阅 UP 主管理**\n"
+        "发送 `/settings` 进入设置菜单 -> 订阅管理：\n"
+        "- 支持多关键词过滤（逗号分隔）、自动获取最新视频补发、免打扰后台静默 30 分钟轮询。\n\n"
+        "💡 *本机器人基于开源项目 [BBDown](https://github.com/nilaoda/BBDown) 驱动。*"
     )
     await message.answer(help_text, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -56,119 +65,291 @@ async def cmd_help(message: types.Message):
 async def cmd_url(message: types.Message):
     await message.answer("🔗 请直接发送你需要下载的 Bilibili 视频链接，例如：\n`https://www.bilibili.com/video/BV1xx411c7mD`\n或分享短链 `https://b23.tv/...`", parse_mode="Markdown")
 
+# Legacy commands gracefully redirected
 @router.message(Command("subscribe"))
 async def cmd_subscribe(message: types.Message):
-    # /subscribe UID [keyword]
-    args = message.text.split(maxsplit=2)
-    if len(args) < 2:
-        await message.answer("Usage: /subscribe <UID> [keyword]")
-        return
-        
-    uid = args[1]
-    keyword = args[2] if len(args) > 2 else None
-    
-    success = await add_subscription(uid, message.chat.id, keyword)
-    if success:
-        await message.answer(f"✅ Successfully subscribed to Bilibili UID: {uid}" + (f" with keyword: {keyword}" if keyword else ""))
-    else:
-        await message.answer("❌ You are already subscribed to this UID in this chat.")
+    await message.answer("ℹ️ 订阅功能已全新升级，请使用 `/settings` 进入控制面板进行可视化管理！")
 
 @router.message(Command("unsubscribe"))
 async def cmd_unsubscribe(message: types.Message):
-    # /unsubscribe UID
-    args = message.text.split()
-    if len(args) < 2:
-        # Show list if no kwargs
-        subs = await get_user_subscriptions(message.chat.id)
-        if not subs:
-            await message.answer("You have no active subscriptions.")
-            return
-            
-        text = "Your active subscriptions:\n"
-        for sub in subs:
-            text += f"- UID: {sub.uid}" + (f" (Keyword: {sub.keyword})" if sub.keyword else "") + "\n"
-        text += "\nTo remove one: /unsubscribe <UID>"
-        await message.answer(text)
-        return
-        
-    uid = args[1]
-    success = await remove_subscription(uid, message.chat.id)
-    if success:
-        await message.answer(f"✅ Successfully unsubscribed from UID: {uid}")
-    else:
-        await message.answer(f"❌ Subscription to UID {uid} not found.")
+    await message.answer("ℹ️ 订阅功能已全新升级，请使用 `/settings` 取消订阅！")
 
-async def get_video_info(url: str) -> Optional[dict]:
-    cmd = [BBDOWN_PATH, url, "--only-show-info", "--show-all"]
+# ----------------------------
+# 2. Settings & Subscription Menus
+# ----------------------------
+def get_settings_main_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔑 登录管理", callback_data="set_login_menu"))
+    builder.row(InlineKeyboardButton(text="📋 订阅管理", callback_data="set_subs_list"))
+    builder.row(InlineKeyboardButton(text="❌ 关闭菜单", callback_data="close_menu"))
+    return builder.as_markup()
+
+@router.message(Command("settings"))
+async def cmd_settings(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("⚙️ **机器人控制面板**\n请选择你需要管理的功能：", reply_markup=get_settings_main_kb(), parse_mode="Markdown")
+
+@router.callback_query(F.data == "close_menu")
+async def cb_close_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+
+@router.callback_query(F.data == "settings_main")
+async def cb_settings_main(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("⚙️ **机器人控制面板**\n请选择你需要管理的功能：", reply_markup=get_settings_main_kb(), parse_mode="Markdown")
+
+# --- Login Menu ---
+@router.callback_query(F.data == "set_login_menu")
+async def cb_login_menu(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔄 查看登录状态 (检查失效)", callback_data="set_login_check"))
+    builder.row(InlineKeyboardButton(text="📱 发起扫码登录 (生成QR)", callback_data="set_login_trigger"))
+    builder.row(InlineKeyboardButton(text="🔙 返回主菜单", callback_data="settings_main"))
+    await callback.message.edit_text("🔑 **登录管理**\n在此管理你的 Bilibili 登录凭证。", reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+@router.callback_query(F.data == "set_login_check")
+async def cb_login_check(callback: types.CallbackQuery):
+    await callback.answer("正在检查凭证有效性，请稍候...", show_alert=False)
+    # Check by running BBDown login and parsing output
+    cmd = [BBDOWN_PATH, "login"]
     try:
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=DATA_DIR
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
         )
         stdout, _ = await process.communicate()
+        output = stdout.decode('utf-8', errors='ignore')
+        
+        if "过期" in output or "失效" in output or "需扫码" in output or "qrcode" in output:
+            status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录] 重新认证。"
+        elif "成功" in output or "SESSDATA" in output:
+            status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
+        else:
+            status = "⚠️ **状态未知**，请查看日志。"
     except Exception as e:
-        logger.error(f"Error running BBDown --only-show-info: {e}")
-        return None
-
-    if process.returncode != 0:
-        return None
-
-    try:
-        output = stdout.decode('utf-8')
-    except UnicodeDecodeError:
-        output = stdout.decode('gbk', errors='ignore')
-    
-    title = "Unknown Title"
-    qualities = []
-    total_pages = 1
-    parts = []
-    
-    for line in output.split('\n'):
-        if "视频标题:" in line:
-            title = line.split("视频标题:", 1)[1].strip()
+        status = f"❌ **验证时发生系统错误**：{e}"
         
-        if "个分P" in line:
-            m = re.search(r'(\d+)\s*个分P', line)
-            if m:
-                total_pages = int(m.group(1))
-        
-        # Parse qualities
-        match = re.search(r"^\s*(\d+)\.\s*(.*?)$", line)
-        if match and "画质代码:" not in line:
-            qualities.append({
-                "id": match.group(1),
-                "name": match.group(2).strip()
-            })
-            
-        # Parse playlist parts
-        part_match = re.search(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]", line)
-        if part_match:
-            p_idx = int(part_match.group(1))
-            p_title = part_match.group(3).strip()
-            parts.append({"index": p_idx, "title": p_title})
-            
-    return {"title": title, "qualities": qualities, "total_pages": total_pages, "parts": parts}
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 返回登录菜单", callback_data="set_login_menu"))
+    await callback.message.edit_text(f"🔑 **登录状态检查报告**\n\n{status}", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-@router.message(F.text, F.text.regexp(URL_PATTERN))
-async def handle_bilibili_link(message: types.Message, state: FSMContext):
-    # Clear any pending states
+@router.callback_query(F.data == "set_login_trigger")
+async def cb_login_trigger(callback: types.CallbackQuery):
+    await callback.answer("请发送 /login 到聊天框即可启动二维码生成。", show_alert=True)
+
+# --- Subscriptions List ---
+@router.callback_query(F.data == "set_subs_list")
+async def cb_subs_list(callback: types.CallbackQuery):
+    subs = await get_user_subscriptions(callback.from_user.id)
+    
+    builder = InlineKeyboardBuilder()
+    if subs:
+        for sub in subs:
+            name_disp = sub.up_name if sub.up_name else f"UID:{sub.uid}"
+            builder.row(InlineKeyboardButton(text=f"👤 {name_disp}", callback_data=f"sub_detail_{sub.uid}"))
+            
+    builder.row(InlineKeyboardButton(text="➕ 添加新订阅 (Add UP)", callback_data="sub_add"))
+    builder.row(InlineKeyboardButton(text="🔙 返回主菜单", callback_data="settings_main"))
+    
+    text = f"📋 **订阅管理**\n您当前共有 **{len(subs)}** 个活跃订阅。\n请点击 UP 主名字进行详细配置，或点击下方按钮添加。"
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+# --- Add Subscription Flow ---
+@router.callback_query(F.data == "sub_add")
+async def cb_sub_add(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(SubFSM.waiting_for_uid)
+    builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 取消并返回", callback_data="set_subs_list"))
+    await callback.message.edit_text("➕ **添加新订阅**\n\n请**回复本消息**输入你要订阅的 UP 主 **UID**(纯数字)：", reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+@router.message(SubFSM.waiting_for_uid)
+async def process_sub_uid(message: types.Message, state: FSMContext):
+    uid = message.text.strip()
+    if not uid.isdigit():
+        builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙取消", callback_data="set_subs_list"))
+        await message.answer("❌ UID 必须是纯数字。请重新发送:", reply_markup=builder.as_markup())
+        return
+        
+    # fetch UP info
+    processing_msg = await message.answer("🔍 正在拉取 UP 主信息...")
+    up_info = await get_up_info(uid)
+    up_name = up_info["name"] if up_info else "Unknown UP"
+    
+    await state.update_data(uid=uid, up_name=up_name)
+    await state.set_state(SubFSM.waiting_for_keywords)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⏭️ 跳过 (无关键词，全部下载)", callback_data="sub_add_skip_kw"))
+    builder.row(InlineKeyboardButton(text="🔙 取消", callback_data="set_subs_list"))
+    
+    await processing_msg.edit_text(
+        f"✅ 已识别 UP 主：**{up_name}** (`{uid}`)\n\n"
+        "请发送您要过滤的**标题关键词**（支持多个，请用逗号分隔，例如：`Vlog,日常,测评`）。\n"
+        "只有标题包含这些关键词时，机器人才会自动推送。\n\n"
+        "如果您想下载Ta发布的所有视频，请点击下方跳过。",
+        reply_markup=builder.as_markup(), parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data == "sub_add_skip_kw")
+async def cb_sub_add_skip_kw(callback: types.CallbackQuery, state: FSMContext):
+    await finish_add_sub(callback.message, state, None)
+
+@router.message(SubFSM.waiting_for_keywords)
+async def process_sub_keywords(message: types.Message, state: FSMContext):
+    await finish_add_sub(message, state, message.text.strip())
+
+async def finish_add_sub(msg_obj: types.Message, state: FSMContext, keywords: str):
+    data = await state.get_data()
+    uid = data["uid"]
+    up_name = data["up_name"]
+    
+    success = await add_subscription(uid, msg_obj.chat.id, keywords, up_name)
     await state.clear()
     
-    match = URL_PATTERN.search(message.text)
-    if not match:
-        return
+    if success:
+        await msg_obj.answer(f"🎉 **订阅成功！**\n👤 UP: {up_name}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}", parse_mode="Markdown")
+        # Prompt video page 1 directly
+        await show_up_videos_gui(msg_obj, uid, up_name, 1)
+    else:
+        builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 返回列表", callback_data="set_subs_list"))
+        await msg_obj.answer("❌ 订阅失败，您可能已经在此对话中订阅过该 UP 主。", reply_markup=builder.as_markup())
+
+# --- Subscription Details ---
+@router.callback_query(F.data.startswith("sub_detail_"))
+async def cb_sub_detail(callback: types.CallbackQuery):
+    uid = callback.data.replace("sub_detail_", "")
+    subs = await get_user_subscriptions(callback.from_user.id)
+    sub = next((s for s in subs if s.uid == uid), None)
+    if not sub:
+        await callback.answer("未找到该订阅", show_alert=True)
+        return await cb_subs_list(callback)
         
-    url = match.group(1)
-    status_msg = await message.answer("Analyzing video...")
+    name_disp = sub.up_name if sub.up_name else "Unknown"
+    kw_disp = sub.keyword if sub.keyword else "全部内容 (无过滤)"
     
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📺 查看Ta发布的近期视频", callback_data=f"sub_v_p_{uid}_1"))
+    builder.row(InlineKeyboardButton(text="📝 修改关键词过滤", callback_data=f"sub_editkw_{uid}"))
+    builder.row(InlineKeyboardButton(text="🗑️ 删除此订阅", callback_data=f"sub_del_{uid}"))
+    builder.row(InlineKeyboardButton(text="🔙 返回订阅列表", callback_data="set_subs_list"))
+    
+    text = f"👤 **订阅详情**\n\n**UP主**: {name_disp}\n**UID**: `{uid}`\n**触发关键词**: {kw_disp}\n\n*机器每 30 分钟后台轮询一次*"
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("sub_del_"))
+async def cb_sub_del(callback: types.CallbackQuery):
+    uid = callback.data.replace("sub_del_", "")
+    await remove_subscription(uid, callback.from_user.id)
+    await callback.answer("✅ 已删除该订阅！")
+    await cb_subs_list(callback)
+
+@router.callback_query(F.data.startswith("sub_editkw_"))
+async def cb_sub_editkw(callback: types.CallbackQuery, state: FSMContext):
+    uid = callback.data.replace("sub_editkw_", "")
+    await state.update_data(edit_uid=uid)
+    await state.set_state(SubFSM.waiting_for_edit_keywords)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🚫 清空专属关键词 (全部下载)", callback_data=f"sub_doeditkw_{uid}_CLEAR"))
+    builder.row(InlineKeyboardButton(text="🔙 取消返回", callback_data=f"sub_detail_{uid}"))
+    
+    await callback.message.edit_text(
+        f"📝 **修改关键字** (UID: `{uid}`)\n"
+        "请直接回复新关键字（多个请用逗号分隔）。",
+        reply_markup=builder.as_markup(), parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data.startswith("sub_doeditkw_"))
+async def cb_sub_doeditkw(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    uid = parts[2]
+    await add_subscription(uid, callback.from_user.id, None, None) # will update because exist
+    await state.clear()
+    await callback.answer("✅ 已清空过滤词，今后该 UP 的所有新视频皆会收到通知！", show_alert=True)
+    # Re-trigger detail view trick
+    callback.data = f"sub_detail_{uid}"
+    await cb_sub_detail(callback)
+
+@router.message(SubFSM.waiting_for_edit_keywords)
+async def process_sub_editkw(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    uid = data["edit_uid"]
+    kw = message.text.strip()
+    
+    await add_subscription(uid, message.chat.id, kw, None)
+    await state.clear()
+    
+    builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 查看该订阅", callback_data=f"sub_detail_{uid}"))
+    await message.answer(f"✅ 更新成功！当前触发关键词： {kw}", reply_markup=builder.as_markup())
+
+# --- UP Video Pagination Flow ---
+async def show_up_videos_gui(msg_obj: types.Message, uid: str, up_name: str, page: int, is_edit: bool = False):
+    loading_text = f"🔄 正在向 B 站请求 {up_name} 的第 {page} 页视频..."
+    if is_edit:
+        await msg_obj.edit_text(loading_text)
+    else:
+        msg_obj = await msg_obj.answer(loading_text)
+        
+    videos = await get_up_videos(uid, pn=page, ps=10)
+    
+    builder = InlineKeyboardBuilder()
+    if not videos:
+        txt = f"📺 **{up_name} 的投稿视频** (第 {page} 页)\n\n❌ 抱歉，获取失败或此页已无更多内容返回。"
+    else:
+        txt = f"📺 **{up_name} 的投稿视频** (第 {page} 页)\n*点击下方对应序号的按钮，机器人将立即开始下载并发送给你！*\n\n"
+        for idx, v in enumerate(videos, 1):
+            txt += f"`{idx}.` {v['title']}\n"
+            # Limit callback data length, pass download command
+            builder.row(InlineKeyboardButton(text=f"📥 下载第 {idx} 个: {v['title'][:12]}...", callback_data=f"directdl_{v['bvid']}"))
+            
+    # Nav buttons
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ 上一页", callback_data=f"sub_v_p_{uid}_{page - 1}"))
+    if videos and len(videos) == 10:
+        nav_row.append(InlineKeyboardButton(text="下一页 ➡️", callback_data=f"sub_v_p_{uid}_{page + 1}"))
+        
+    if nav_row:
+        builder.row(*nav_row)
+        
+    builder.row(InlineKeyboardButton(text="🔙 返回订阅详情", callback_data=f"sub_detail_{uid}"))
+    await msg_obj.edit_text(txt, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("sub_v_p_"))
+async def cb_sub_v_p(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    uid = parts[3]
+    page = int(parts[4])
+    
+    subs = await get_user_subscriptions(callback.from_user.id)
+    sub = next((s for s in subs if s.uid == uid), None)
+    up_name = sub.up_name if sub and sub.up_name else f"UID {uid}"
+    
+    await show_up_videos_gui(callback.message, uid, up_name, page, is_edit=True)
+
+# ----------------------------
+# 3. Download Trigger & Flow
+# ----------------------------
+@router.callback_query(F.data.startswith("directdl_"))
+async def cb_directdl(callback: types.CallbackQuery):
+    bvid = callback.data.replace("directdl_", "")
+    await callback.answer("任务已安排并放入队列！", show_alert=False)
+    # Simulate a user message to trigger standard handle_bilibili_link routine
+    url = f"https://www.bilibili.com/video/{bvid}"
+    fake_msg = callback.message
+    fake_msg.text = url
+    fake_msg.from_user = callback.from_user
+    await handle_bilibili_link(fake_msg, FSMContext(storage=None, key=None)) # We pass fake FSM if needed or just let standard entry handle it.
+    # Actually, it's safer to directly fetch info and show formats:
+    await trigger_download_selection(callback.message, callback.from_user.id, url)
+
+async def trigger_download_selection(message: types.Message, user_id: int, url: str):
+    status_msg = await message.answer(f"🔍 解析视频: `{url}`...", parse_mode="Markdown")
     info = await get_video_info(url)
     if not info:
-        await status_msg.edit_text("Failed to fetch video information. Make sure the link is valid and you have permissions.")
+        await status_msg.edit_text("❌ 解析失败，请确认该视频公开可见。")
         return
         
-    user_sessions[message.from_user.id] = {
+    user_sessions[user_id] = {
         "url": url,
         "title": info["title"],
         "total_pages": info["total_pages"]
@@ -176,13 +357,10 @@ async def handle_bilibili_link(message: types.Message, state: FSMContext):
     
     parts = info.get("parts", [])
     if parts and len(parts) > 1:
-        # We have a multi-part playlist. Let's send the list in chunks to avoid limits
         chunk_text = f"**{info['title']}**\n(Total Pages: {info['total_pages']})\n\n**Playlist Parts:**\n"
         is_first_chunk = True
-        
         for p in parts:
             line = f"`{p['index']:03d}` - {p['title']}\n"
-            # Telegram message limit is 4096. Keep strings well under that limit.
             if len(chunk_text) + len(line) > 3800:
                 if is_first_chunk:
                     await status_msg.edit_text(chunk_text, parse_mode="Markdown")
@@ -190,41 +368,68 @@ async def handle_bilibili_link(message: types.Message, state: FSMContext):
                 else:
                     await message.answer(chunk_text, parse_mode="Markdown")
                 chunk_text = ""
-                
             chunk_text += line
-            
-        # Send the final chunk of parts
         if chunk_text:
-            if is_first_chunk:
-                await status_msg.edit_text(chunk_text, parse_mode="Markdown")
-            else:
-                await message.answer(chunk_text, parse_mode="Markdown")
-                
-        # Prepare the next message for download options
-        action_msg_text = "Choose format for download:"
+            if is_first_chunk: await status_msg.edit_text(chunk_text, parse_mode="Markdown")
+            else: await message.answer(chunk_text, parse_mode="Markdown")
+        action_msg_text = "📺 这是一个多 P 播放列表，请选择下载格式："
     else:
-        # Single page, just edit the status message to hold the download options
-        await status_msg.edit_text(f"**{info['title']}**\n(Total Pages: 1)")
-        action_msg_text = "Choose format:"
+        await status_msg.edit_text(f"📺 **{info['title']}**\n(Total Pages: 1)")
+        action_msg_text = "请选择你要提取的格式："
         
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🎬 Highest Quality (Video+Audio)", callback_data="dlq_best"))
-    builder.row(InlineKeyboardButton(text="🎵 Audio Only", callback_data="dlq_audio"))
-    builder.row(InlineKeyboardButton(text="📺 Danmaku (XML/ASS)", callback_data="dlq_danmaku"))
-    builder.row(InlineKeyboardButton(text="💬 Subtitles Only", callback_data="dlq_sub"))
+    builder.row(InlineKeyboardButton(text="🎬 最高画质直出 (默认推荐)", callback_data="dlq_best"))
+    builder.row(InlineKeyboardButton(text="🎵 仅提取音频 (MP3/M4A)", callback_data="dlq_audio"))
+    builder.row(InlineKeyboardButton(text="📺 单独提取弹幕文件", callback_data="dlq_danmaku"))
     
-    await message.answer(
-        action_msg_text,
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
-    )
+    await message.answer(action_msg_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
+@router.message(F.text, F.text.regexp(URL_PATTERN))
+async def handle_bilibili_link(message: types.Message, state: FSMContext):
+    await state.clear()
+    match = URL_PATTERN.search(message.text)
+    if not match: return
+    await trigger_download_selection(message, message.from_user.id, match.group(1))
+
+async def get_video_info(url: str) -> Optional[dict]:
+    cmd = [BBDOWN_PATH, url, "--only-show-info", "--show-all"]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
+        )
+        stdout, _ = await process.communicate()
+    except Exception as e:
+        return None
+
+    if process.returncode != 0: return None
+
+    try: output = stdout.decode('utf-8')
+    except: output = stdout.decode('gbk', errors='ignore')
+    
+    title = "Unknown Title"
+    qualities = []
+    total_pages = 1
+    parts = []
+    
+    for line in output.split('\n'):
+        if "视频标题:" in line: title = line.split("视频标题:", 1)[1].strip()
+        if "个分P" in line:
+            m = re.search(r'(\d+)\s*个分P', line)
+            if m: total_pages = int(m.group(1))
+        match = re.search(r"^\s*(\d+)\.\s*(.*?)$", line)
+        if match and "画质代码:" not in line: qualities.append({"id": match.group(1), "name": match.group(2).strip()})
+        part_match = re.search(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]", line)
+        if part_match: parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
+            
+    return {"title": title, "qualities": qualities, "total_pages": total_pages, "parts": parts}
+
+# ----------------------------
+# 4. Old Flow Handlers (Selections)
+# ----------------------------
 @router.callback_query(F.data.startswith("dlq_"))
 async def handle_quality_selection(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    if user_id not in user_sessions:
-        await callback.answer("Session expired. Send link again.", show_alert=True)
-        return
+    if user_id not in user_sessions: return await callback.answer("Session expired. Send link again.", show_alert=True)
         
     action = callback.data.replace("dlq_", "")
     user_sessions[user_id]["action"] = action
@@ -232,52 +437,29 @@ async def handle_quality_selection(callback: types.CallbackQuery, state: FSMCont
     
     builder = InlineKeyboardBuilder()
     if total_pages > 1:
-        builder.row(InlineKeyboardButton(text="📥 Download All Pages (1 to {})".format(total_pages), callback_data="dlp_all"))
-        builder.row(InlineKeyboardButton(text="🔽 Download P1 Only", callback_data="dlp_1"))
-        builder.row(InlineKeyboardButton(text="✏️ Custom Pages", callback_data="dlp_custom"))
-        
-        await callback.message.edit_text(
-            f"**Playlist detected** ({total_pages} pages).\nWhich pages do you want to download?",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        builder.row(InlineKeyboardButton(text="📥 下载所有 P (批量)", callback_data="dlp_all"))
+        builder.row(InlineKeyboardButton(text="🔽 仅下载 P1", callback_data="dlp_1"))
+        builder.row(InlineKeyboardButton(text="✏️ 自定义 P 数范围", callback_data="dlp_custom"))
+        await callback.message.edit_text(f"**这是一个合集视频** (总共 {total_pages} P)。\n您希望下载哪些章节？", reply_markup=builder.as_markup(), parse_mode="Markdown")
     else:
-        # Single page, jump straight to download
-        builder.row(InlineKeyboardButton(text="✅ Start Download", callback_data="dlp_1"))
-        await callback.message.edit_text(
-            f"**Ready to download.**\nPress start to begin.",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        builder.row(InlineKeyboardButton(text="🚀 开始下载并上传", callback_data="dlp_1"))
+        await callback.message.edit_text(f"配置完毕，**准备就绪**。\n点击启动后将在后台处理，请耐心等待文件回传。", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("dlp_"))
 async def handle_page_selection(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    if user_id not in user_sessions:
-        await callback.answer("Session expired. Send link again.", show_alert=True)
-        return
+    if user_id not in user_sessions: return await callback.answer("Session expired. Send link again.", show_alert=True)
         
     page_action = callback.data.replace("dlp_", "")
     total_pages = user_sessions[user_id]["total_pages"]
     
     if page_action == "custom":
         await state.set_state(DownloadFSM.waiting_for_pages)
-        await callback.message.edit_text(
-            "**Custom Pages requested:**\nPlease reply with the page numbers you want to download.\n"
-            "Examples:\n"
-            "`1-3` (Downloads P1, P2, P3)\n"
-            "`1,4,7` (Downloads P1, P4, P7)\n"
-            "`1-3,5` (Downloads P1, P2, P3, P5)\n\n"
-            "Waiting for your input...",
-            parse_mode="Markdown"
-        )
+        await callback.message.edit_text("✏️ **请求自定义输入页数：**\n\n请直接回复本条，输入你想下载的页面。\n举个例子：\n`1-3`（代表下载 1,2,3 分P）\n`1,4,7`（代表离散下载）", parse_mode="Markdown")
         return
-    elif page_action == "all":
-        pages = list(range(1, total_pages + 1))
-    elif page_action == "1":
-        pages = [1]
-    else:
-        pages = [1]
+    elif page_action == "all": pages = list(range(1, total_pages + 1))
+    elif page_action == "1": pages = [1]
+    else: pages = [1]
         
     await start_multi_download(callback.message, user_id, pages)
 
@@ -286,8 +468,7 @@ async def process_custom_pages(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id not in user_sessions:
         await state.clear()
-        await message.answer("Session expired. Send link again.")
-        return
+        return await message.answer("Session expired. Send link again.")
         
     text = message.text.replace(" ", "").replace("，", ",")
     total_pages = user_sessions[user_id]["total_pages"]
@@ -299,76 +480,53 @@ async def process_custom_pages(message: types.Message, state: FSMContext):
             if not part: continue
             if '-' in part:
                 start, end = map(int, part.split('-'))
-                # Clamp boundaries
-                start = max(1, start)
-                end = min(total_pages, end)
-                if start <= end:
-                    pages.extend(range(start, end + 1))
+                start = max(1, start); end = min(total_pages, end)
+                if start <= end: pages.extend(range(start, end + 1))
             else:
                 p = int(part)
-                if 1 <= p <= total_pages:
-                    pages.append(p)
-                    
-        # Remove duplicates and sort
+                if 1 <= p <= total_pages: pages.append(p)
         pages = sorted(list(set(pages)))
-        
-        if not pages:
-            raise ValueError("No valid pages found")
-            
+        if not pages: raise ValueError("No valid pages found")
     except Exception:
-        await message.answer("❌ Invalid format. Please use numbers, commas, and hyphens (e.g., `1-5,7`). Try again, or send a new link to cancel.", parse_mode="Markdown")
-        return
+        return await message.answer("❌ 格式错误！请重试或者发送新的网址取消操作。正确格式例如: `1-5,7`", parse_mode="Markdown")
         
     await state.clear()
-    status_msg = await message.answer("Starting customized download queue...")
+    status_msg = await message.answer("✅ 自定义页数锁定，开始提取队列...")
     await start_multi_download(status_msg, user_id, pages)
 
 async def start_multi_download(status_msg: types.Message, user_id: int, pages: list[int]):
     session = user_sessions.pop(user_id, None)
-    if not session:
-        await status_msg.edit_text("Session expired.")
-        return
+    if not session: return await status_msg.edit_text("Session expired.")
         
     url = session["url"]
     action = session["action"]
     title = session["title"]
     
     cmd_args = [url]
-    if action == "audio":
-        cmd_args.append("--audio-only")
-    elif action == "danmaku":
-        cmd_args.append("--danmaku")
-    elif action == "sub":
-        cmd_args.append("--sub-only")
+    if action == "audio": cmd_args.append("--audio-only")
+    elif action == "danmaku": cmd_args.append("--danmaku")
+    elif action == "sub": cmd_args.append("--sub-only")
         
     dl_dir = Path(DATA_DIR) / "downloads" / str(user_id)
     dl_dir.mkdir(parents=True, exist_ok=True)
     
-    await status_msg.edit_text(f"Job queued: {len(pages)} pages to download.\nProcessing P{pages[0]}...")
+    await status_msg.edit_text(f"🚀 已排队 {len(pages)} 个任务。\n当前: P{pages[0]}")
     
     for i, p in enumerate(pages):
         dl_dir.mkdir(parents=True, exist_ok=True)
         current_cmd_args = cmd_args.copy()
         current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
         
-        try:
-            await status_msg.edit_text(f"📥 **Downloading P{p}** ({i+1}/{len(pages)})...\nTitle: {title}", parse_mode="Markdown")
-        except:
-            pass
+        try: await status_msg.edit_text(f"📥 **拉取数据库 P{p}** ({i+1}/{len(pages)})...\n标题: `{title}`", parse_mode="Markdown")
+        except: pass
             
         cmd = [BBDOWN_PATH] + current_cmd_args
-        logger.info(f"Executing: {' '.join(cmd)}")
-        
         try:
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=DATA_DIR
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
             )
         except Exception as e:
-            await status_msg.answer(f"❌ Failed to start process for P{p}: {e}")
-            continue
+            await status_msg.answer(f"❌ P{p} 阶段异常: {e}"); continue
 
         last_update_time = time.time()
         last_percentage = 0.0
@@ -378,47 +536,29 @@ async def start_multi_download(status_msg: types.Message, user_id: int, pages: l
             nonlocal last_update_time, current_text
             current_time = time.time()
             if force or (current_time - last_update_time) >= 3.0:
-                full_text = f"📥 **Downloading P{p}** ({i+1}/{len(pages)})\n{text}"
+                full_text = f"📥 **正在进行任务 P{p}** ({i+1}/{len(pages)})\n{text}"
                 if full_text != current_text:
                     try:
                         await status_msg.edit_text(full_text, parse_mode="Markdown")
-                        current_text = full_text
-                        last_update_time = current_time
-                    except Exception as e:
-                        pass
+                        current_text = full_text; last_update_time = current_time
+                    except Exception: pass
 
         buffer = bytearray()
         while True:
             chunk = await process.stdout.read(1024)
-            if not chunk:
-                break
-                
+            if not chunk: break
             buffer.extend(chunk)
-            
             while b'\r' in buffer or b'\n' in buffer:
                 if b'\r' in buffer and b'\n' in buffer:
-                    idx_r = buffer.find(b'\r')
-                    idx_n = buffer.find(b'\n')
+                    idx_r = buffer.find(b'\r'); idx_n = buffer.find(b'\n')
                     idx = min(idx_r, idx_n) if idx_r != -1 and idx_n != -1 else max(idx_r, idx_n)
-                elif b'\r' in buffer:
-                    idx = buffer.find(b'\r')
-                else:
-                    idx = buffer.find(b'\n')
-                    
-                line_bytes = buffer[:idx]
-                del buffer[:idx+1]
-                
-                if not line_bytes:
-                    continue
-                    
-                try:
-                    decoded_line = line_bytes.decode('utf-8').strip()
-                except UnicodeDecodeError:
-                    decoded_line = line_bytes.decode('gbk', errors='ignore').strip()
-                    
-                if not decoded_line:
-                    continue
-            
+                elif b'\r' in buffer: idx = buffer.find(b'\r')
+                else: idx = buffer.find(b'\n')
+                line_bytes = buffer[:idx]; del buffer[:idx+1]
+                if not line_bytes: continue
+                try: decoded_line = line_bytes.decode('utf-8').strip()
+                except: decoded_line = line_bytes.decode('gbk', errors='ignore').strip()
+                if not decoded_line: continue
                 prog_match = PROGRESS_PATTERN.search(decoded_line)
                 if prog_match:
                     try:
@@ -427,54 +567,40 @@ async def start_multi_download(status_msg: types.Message, user_id: int, pages: l
                             bar = create_progress_bar(percentage)
                             await flush_ui(f"`{bar}`", force=True)
                             last_percentage = percentage
-                        elif percentage == 100.0:
-                            await flush_ui(f"Processing...", force=True)
-                    except ValueError:
-                        pass
+                        elif percentage == 100.0: await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+                    except: pass
                     
         await process.wait()
-        
         if process.returncode != 0:
-            await status_msg.answer(f"❌ Download failed for P{p} with exit code {process.returncode}.")
+            await status_msg.answer(f"❌ 下载 P{p} 端点遭遇失败, 错误代码 {process.returncode}。")
             for f in dl_dir.glob("*"):
                 try: os.remove(f)
                 except: pass
             continue
 
-        await flush_ui("Uploading file to Telegram...", force=True)
-        
-        # Give BBDown a moment to finish muxing and moving the file
+        await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
         await asyncio.sleep(1.5)
         
-        # BBDown nests files in subdirectories, use rglob and filter out images
         downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
         if not downloaded_files:
-            await status_msg.answer(f"❌ Error: Could not find downloaded file for P{p}.")
-            # Cleanup dir tree
+            await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
             try: shutil.rmtree(dl_dir)
             except: pass
             continue
             
         target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
-        
         try:
             file = FSInputFile(str(target_file))
             file_cap = f"{title} (P{p})"
-            if target_file.suffix.lower() == ".mp4":
-                await status_msg.answer_video(file, caption=file_cap)
-            elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]:
-                await status_msg.answer_audio(file, caption=file_cap)
-            else:
-                await status_msg.answer_document(file, caption=file_cap)
-                
-            await flush_ui(f"✅ P{p} uploaded!", force=True)
+            if target_file.suffix.lower() == ".mp4": await status_msg.answer_video(file, caption=file_cap)
+            elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]: await status_msg.answer_audio(file, caption=file_cap)
+            else: await status_msg.answer_document(file, caption=file_cap)
+            await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
         except Exception as e:
             logger.error(f"Failed to send file: {e}")
-            await status_msg.answer(f"❌ Failed to upload P{p} to Telegram: {e}")
+            await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
         finally:
-            try:
-                shutil.rmtree(dl_dir)
-            except:
-                pass
+            try: shutil.rmtree(dl_dir)
+            except: pass
                     
-    await status_msg.answer(f"🎉 **Batch Download Complete!**\nFinished {len(pages)} items.", parse_mode="Markdown")
+    await status_msg.answer(f"🎉 **整个合并列传周期结束！**\n一共安全卸货 {len(pages)} 单内容。", parse_mode="Markdown")
