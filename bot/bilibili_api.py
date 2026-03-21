@@ -6,6 +6,7 @@ import os
 import re
 from functools import reduce
 from hashlib import md5
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,29 @@ HEADERS = {
     "Referer": "https://space.bilibili.com/"
 }
 
-def get_auth_cookies():
-    # BBDown saves login credentials in DATA_DIR/BBDown.data.
-    # By picking up SESSDATA from there, our API requests simulate the logged-in user, bypassing Bilibili's strict Risk Control (403/352).
+# --- WBI 密钥内存缓存 ---
+# WBI key 每天才更新一次，缓存 2 小时足够，避免高频请求触发 B 站风控
+_wbi_cache: dict = {
+    "img_key": None,
+    "sub_key": None,
+    "fetched_at": 0.0,
+}
+_WBI_CACHE_TTL = 7200  # 2 小时（秒）
+
+# --- BBDown.data Cookie 内存缓存 ---
+# BBDown.data 文件在登录后才会变化，启动时加载一次到内存
+# 避免在高并发异步框架中每次请求都阻塞事件循环做同步 I/O
+_cookie_cache: dict = {
+    "cookies": None,       # 缓存的 cookies dict
+    "file_mtime": 0.0,     # 上次读取时的文件修改时间，用于检测文件变化
+}
+
+
+def _load_cookies_from_disk() -> dict:
+    """从磁盘同步读取 BBDown.data，返回 cookies dict。
+    
+    仅在启动时或检测到文件变化时调用，不在热路径中执行。
+    """
     cookies = {"buvid3": "xyj114514"}
     try:
         from config import DATA_DIR
@@ -24,11 +45,40 @@ def get_auth_cookies():
         if os.path.exists(data_file):
             with open(data_file, "rb") as f:
                 content = f.read().decode('utf-8', errors='ignore')
-                match = re.search(r"SESSDATA=([^;&]+)", content)
-                if match:
-                    cookies["SESSDATA"] = match.group(1)
+            match = re.search(r"SESSDATA=([^;&]+)", content)
+            if match:
+                cookies["SESSDATA"] = match.group(1)
+                logger.info("BBDown.data loaded: SESSDATA found")
+            else:
+                logger.info("BBDown.data loaded: no SESSDATA (not logged in yet)")
     except Exception as e:
         logger.warning(f"Failed to parse BBDown.data cookies: {e}")
+    return cookies
+
+
+def get_auth_cookies() -> dict:
+    """获取认证 cookies，优先从内存缓存读取。
+    
+    仅当 BBDown.data 文件的 mtime 发生变化时（即用户重新登录后）才重新读取磁盘，
+    其余情况直接返回内存缓存，不阻塞事件循环。
+    """
+    global _cookie_cache
+    try:
+        from config import DATA_DIR
+        data_file = os.path.join(DATA_DIR, "BBDown.data")
+        current_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0.0
+    except Exception:
+        current_mtime = 0.0
+
+    # 缓存有效（文件未变化）则直接返回
+    if _cookie_cache["cookies"] is not None and current_mtime == _cookie_cache["file_mtime"]:
+        return _cookie_cache["cookies"]
+
+    # 文件变化或首次加载，重新读取
+    logger.info("BBDown.data changed or first load, refreshing cookie cache...")
+    cookies = _load_cookies_from_disk()
+    _cookie_cache["cookies"] = cookies
+    _cookie_cache["file_mtime"] = current_mtime
     return cookies
 
 mixinKeyEncTab = [
@@ -56,7 +106,26 @@ def encWbi(params: dict, img_key: str, sub_key: str):
     params['w_rid'] = wbi_sign
     return params
 
-async def get_wbi_keys(client: httpx.AsyncClient) -> tuple[str, str]:
+async def get_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
+    """获取 WBI 签名所需的 img_key 和 sub_key，带内存缓存（TTL 2 小时）。
+    
+    B 站 WBI key 每天才轮换一次，高频调用 /nav 接口极易触发 412/403 风控。
+    缓存命中时直接返回，不发起任何网络请求。
+    """
+    global _wbi_cache
+    now = time.time()
+    
+    # 缓存有效则直接返回，不请求网络
+    if (
+        _wbi_cache["img_key"]
+        and _wbi_cache["sub_key"]
+        and (now - _wbi_cache["fetched_at"]) < _WBI_CACHE_TTL
+    ):
+        logger.debug("WBI keys cache hit, skipping /nav request")
+        return _wbi_cache["img_key"], _wbi_cache["sub_key"]
+    
+    # 缓存过期或首次请求，重新拉取
+    logger.info("WBI keys cache miss, fetching from /nav ...")
     resp = await client.get('https://api.bilibili.com/x/web-interface/nav')
     resp.raise_for_status()
     json_content = resp.json()
@@ -64,6 +133,13 @@ async def get_wbi_keys(client: httpx.AsyncClient) -> tuple[str, str]:
     sub_url = json_content['data']['wbi_img']['sub_url']
     img_key = img_url.rsplit('/', 1)[1].split('.')[0]
     sub_key = sub_url.rsplit('/', 1)[1].split('.')[0]
+    
+    # 写入缓存
+    _wbi_cache["img_key"] = img_key
+    _wbi_cache["sub_key"] = sub_key
+    _wbi_cache["fetched_at"] = now
+    logger.info(f"WBI keys refreshed, next refresh in {_WBI_CACHE_TTL // 60} min")
+    
     return img_key, sub_key
 
 async def get_up_info(uid: str) -> dict:

@@ -3,6 +3,8 @@ bbdown_fetcher.py
 Wraps BBDown CLI calls for:
   1. Fetching all video URLs from a UP master's space page (-po -p ALL)
   2. Parsing a single video's metadata (--only-show-info)
+
+所有 BBDown 调用都通过 subprocess_executor 统一执行。
 """
 
 import asyncio
@@ -10,12 +12,13 @@ import logging
 import re
 from typing import Callable, Awaitable, Optional
 
-from config import BBDOWN_PATH, DATA_DIR
+from config import DATA_DIR
 from database import (
     upsert_up_video_url,
     get_unparsed_videos,
     update_video_title,
 )
+from subprocess_executor import run_bbdown, run_bbdown_simple, DEFAULT_SCAN_TIMEOUT, DEFAULT_INFO_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -30,32 +33,6 @@ _BVID_RE = re.compile(r"/video/((?:BV[\w]+|av\d+))")
 def _extract_bvid(url: str) -> Optional[str]:
     m = _BVID_RE.search(url)
     return m.group(1) if m else None
-
-
-async def _run_bbdown(args: list[str], timeout: int = 300) -> tuple[int, str]:
-    """Run BBDown with the given args, return (returncode, combined output)."""
-    cmd = [BBDOWN_PATH] + args
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=DATA_DIR,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return -1, ""
-        try:
-            output = stdout.decode("utf-8")
-        except UnicodeDecodeError:
-            output = stdout.decode("gbk", errors="ignore")
-        return proc.returncode, output
-    except Exception as e:
-        logger.error(f"BBDown subprocess error: {e}")
-        return -1, ""
 
 
 async def fetch_all_video_urls(
@@ -79,9 +56,9 @@ async def fetch_all_video_urls(
     if status_callback:
         await status_callback(f"🔍 正在使用 BBDown 扫描 UID `{uid}` 的全部投稿视频，请耐心等候…")
 
-    returncode, output = await _run_bbdown(args, timeout=600)
+    result = await run_bbdown_simple(args, DATA_DIR, timeout=DEFAULT_SCAN_TIMEOUT)
 
-    urls_found = _VIDEO_URL_RE.findall(output)
+    urls_found = _VIDEO_URL_RE.findall(result.output)
     # Deduplicate while preserving order
     seen = set()
     unique_urls = []
@@ -113,11 +90,11 @@ async def parse_one_video(bvid: str, url: str) -> Optional[str]:
     Returns the title string, or None on failure.
     """
     args = [url, "--only-show-info"]
-    returncode, output = await _run_bbdown(args, timeout=60)
+    result = await run_bbdown_simple(args, DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
 
     # Return code != 0 is not always fatal (BBDown sometimes exits 1 but still prints info)
     title = None
-    for line in output.splitlines():
+    for line in result.output.splitlines():
         if "视频标题:" in line:
             title = line.split("视频标题:", 1)[1].strip()
             break

@@ -2,19 +2,20 @@ import asyncio
 import logging
 import httpx
 from aiogram import Bot
+from pathlib import Path
+import os
+from aiogram.types import FSInputFile
 
 from database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
     mark_bvid_downloaded
 )
-
-# Re-use your download logic here
-from handlers import get_video_info, create_progress_bar
+from handlers import get_video_info
 from config import BBDOWN_PATH, DATA_DIR
-from pathlib import Path
-import os
-from aiogram.types import FSInputFile
+from subprocess_executor import (
+    SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ async def check_subscriptions(bot: Bot):
 
 
 async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):
+    """自动下载任务 - 使用统一的 SubprocessExecutor"""
     video_url = f"https://www.bilibili.com/video/{bvid}"
     up_display = f" ({up_name})" if up_name else ""
     msg = await bot.send_message(chat_id, f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...", parse_mode="Markdown")
@@ -93,53 +95,43 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     dl_dir = Path(DATA_DIR) / "downloads" / "auto" / bvid
     dl_dir.mkdir(parents=True, exist_ok=True)
     
-    # We download highest quality Video+Audio
-    cmd = [BBDOWN_PATH, video_url, "--work-dir", str(dl_dir)]
+    # 使用统一的 SubprocessExecutor
+    executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
     
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=DATA_DIR
-        )
-    except Exception as e:
-        await msg.edit_text(f"Failed to start auto-download: {e}")
-        return
-
-    # For auto download we might not want to throttle message edits since it runs in BG
-    # To avoid flood, we'll only update every 15 seconds
     last_update = asyncio.get_event_loop().time()
     last_pct = 0.0
     
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            break
-            
-        decoded = line.decode('utf-8', errors='ignore').strip()
-        import re
-        from handlers import PROGRESS_PATTERN
+    try:
+        async for progress in executor.run_with_progress(
+            [BBDOWN_PATH, video_url, "--work-dir", str(dl_dir)],
+            DATA_DIR
+        ):
+            now = asyncio.get_event_loop().time()
+            if (progress.percentage - last_pct) >= 20.0 or (now - last_update) >= 15.0:
+                bar = create_progress_bar(progress.percentage)
+                try:
+                    await msg.edit_text(f"Auto-downloading: **{title}**\n`{bar}`")
+                except:
+                    pass
+                last_pct = progress.percentage
+                last_update = now
         
-        match = PROGRESS_PATTERN.search(decoded)
-        if match:
-            try:
-                pct = float(match.group(1))
-                now = asyncio.get_event_loop().time()
-                if (pct - last_pct) >= 20.0 or (now - last_update) >= 15.0:
-                    bar = create_progress_bar(pct)
-                    try:
-                        await msg.edit_text(f"Auto-downloading: **{title}**\n`{bar}`")
-                    except:
-                        pass
-                    last_pct = pct
-                    last_update = now
-            except ValueError:
-                pass
-                
-    await process.wait()
+        result = await executor.wait()
+        
+    except Exception as e:
+        logger.error(f"Error during auto-download: {e}")
+        await executor.kill()
+        await msg.edit_text(f"Auto-download error: {e}")
+        return
     
-    if process.returncode == 0:
+    if result.timed_out:
+        await msg.edit_text(f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。")
+        for f in dl_dir.glob("*"):
+            try: os.remove(f)
+            except Exception as e: logger.error(f"Cleanup error: {e}")
+        return
+    
+    if result.return_code == 0:
         downloaded_files = list(dl_dir.glob("*"))
         if downloaded_files:
             target_file = max(downloaded_files, key=lambda p: p.stat().st_size)
@@ -154,7 +146,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         else:
             await msg.edit_text("Download succeeded but file not found.")
     else:
-        await msg.edit_text(f"Download failed with exit code: {process.returncode}")
+        await msg.edit_text(f"Download failed with exit code: {result.return_code}")
 
     # Cleanup
     for f in dl_dir.glob("*"):

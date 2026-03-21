@@ -1,0 +1,232 @@
+"""
+subprocess_executor.py - 统一的子进程执行器，封装超时、进度解析、异常处理。
+
+所有 BBDown 调用都应通过此模块执行，确保：
+  1. 统一的超时控制
+  2. 统一的输出解析（进度条、日志）
+  3. 防止僵尸进程
+  4. 可选的进度回调
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from dataclasses import dataclass
+from typing import Optional, Callable, Awaitable, AsyncGenerator, Tuple, List
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# 默认超时配置
+DEFAULT_DOWNLOAD_TIMEOUT = 3600  # 1 小时（下载大文件）
+DEFAULT_INFO_TIMEOUT = 60        # 1 分钟（仅获取信息）
+DEFAULT_SCAN_TIMEOUT = 600       # 10 分钟（扫描 UP 主全部视频）
+
+# 进度百分比正则
+PROGRESS_PATTERN = re.compile(r"(\d+(\.\d+)?)%")
+
+
+@dataclass
+class ProcessResult:
+    """子进程执行结果"""
+    return_code: int
+    output: str
+    timed_out: bool = False
+    error: Optional[str] = None
+
+
+@dataclass
+class ProgressUpdate:
+    """进度更新事件"""
+    percentage: float
+    line: str
+
+
+class SubprocessExecutor:
+    """
+    统一的子进程执行器。
+    
+    用法示例:
+        executor = SubprocessExecutor(timeout=3600)
+        async for progress in executor.run_with_progress(cmd, cwd):
+            print(f"进度: {progress.percentage}%")
+        result = await executor.wait()
+    """
+    
+    def __init__(
+        self,
+        timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+        read_timeout: int = 30,
+    ):
+        self.timeout = timeout
+        self.read_timeout = read_timeout
+        self._process: Optional[asyncio.subprocess.Process] = None
+        self._output_lines: List[str] = []
+        self._timed_out: bool = False
+    
+    async def run_with_progress(
+        self,
+        cmd: List[str],
+        cwd: str,
+    ) -> AsyncGenerator[ProgressUpdate, None]:
+        """
+        执行命令并 yield 进度更新。
+        
+        用法:
+            executor = SubprocessExecutor(timeout=3600)
+            async for progress in executor.run_with_progress(cmd, cwd):
+                await update_ui(progress.percentage)
+            result = await executor.get_result()
+        """
+        self._output_lines = []
+        self._timed_out = False
+        
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create subprocess: {e}")
+            return
+        
+        buffer = bytearray()
+        
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    self._process.stdout.read(1024),
+                    timeout=self.read_timeout
+                )
+            except asyncio.TimeoutError:
+                # 读超时，检查进程是否还在运行
+                if self._process.returncode is not None:
+                    break
+                continue
+            
+            if not chunk:
+                break
+            
+            buffer.extend(chunk)
+            
+            # 解析完整的行
+            while b'\r' in buffer or b'\n' in buffer:
+                # 找到第一个分隔符
+                idx = self._find_line_end(buffer)
+                if idx == -1:
+                    break
+                
+                line_bytes = buffer[:idx]
+                del buffer[:idx + 1]
+                
+                if not line_bytes:
+                    continue
+                
+                try:
+                    line = line_bytes.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    line = line_bytes.decode('gbk', errors='ignore').strip()
+                
+                self._output_lines.append(line)
+                
+                # 检查进度
+                match = PROGRESS_PATTERN.search(line)
+                if match:
+                    try:
+                        percentage = float(match.group(1))
+                        yield ProgressUpdate(percentage=percentage, line=line)
+                    except ValueError:
+                        pass
+    
+    def _find_line_end(self, buffer: bytearray) -> int:
+        """找到行结束符位置"""
+        idx_r = buffer.find(b'\r')
+        idx_n = buffer.find(b'\n')
+        
+        if idx_r != -1 and idx_n != -1:
+            return min(idx_r, idx_n)
+        elif idx_r != -1:
+            return idx_r
+        elif idx_n != -1:
+            return idx_n
+        return -1
+    
+    async def wait(self) -> ProcessResult:
+        """等待进程结束并返回结果"""
+        if self._process is None:
+            return ProcessResult(return_code=-1, output="", error="Process not started")
+        
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"Process timeout after {self.timeout}s, killing...")
+            self._process.kill()
+            await self._process.wait()
+            self._timed_out = True
+        
+        return ProcessResult(
+            return_code=self._process.returncode or -1,
+            output="\n".join(self._output_lines),
+            timed_out=self._timed_out,
+        )
+    
+    async def kill(self):
+        """强制终止进程"""
+        if self._process and self._process.returncode is None:
+            self._process.kill()
+            await self._process.wait()
+
+
+async def run_bbdown(
+    args: List[str],
+    cwd: str,
+    timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+    progress_callback: Optional[Callable[[ProgressUpdate], Awaitable[None]]] = None,
+) -> ProcessResult:
+    """
+    执行 BBDown 命令的便捷封装。
+    
+    Args:
+        args: BBDown 参数列表（不含 bbdown 可执行文件本身）
+        cwd: 工作目录
+        timeout: 总超时时间（秒）
+        progress_callback: 可选的进度回调函数
+    
+    Returns:
+        ProcessResult 对象
+    """
+    from config import BBDOWN_PATH
+    cmd = [BBDOWN_PATH] + args
+    
+    executor = SubprocessExecutor(timeout=timeout)
+    
+    try:
+        async for progress in executor.run_with_progress(cmd, cwd):
+            if progress_callback:
+                try:
+                    await progress_callback(progress)
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
+    except Exception as e:
+        logger.error(f"BBDown execution error: {e}")
+        return ProcessResult(return_code=-1, output="", error=str(e))
+    
+    return await executor.wait()
+
+
+async def run_bbdown_simple(args: list[str], cwd: str, timeout: int = DEFAULT_INFO_TIMEOUT) -> ProcessResult:
+    """
+    执行 BBDown 命令（无进度回调），适用于快速查询操作。
+    """
+    return await run_bbdown(args, cwd, timeout=timeout, progress_callback=None)
+
+
+def create_progress_bar(percentage: float, length: int = 15) -> str:
+    """创建文本进度条"""
+    filled = int(length * percentage / 100)
+    empty = length - filled
+    return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"

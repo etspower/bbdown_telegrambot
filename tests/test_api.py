@@ -1,3 +1,8 @@
+"""
+测试 Bilibili WBI API 响应格式。
+
+运行: python -m tests.test_api
+"""
 import asyncio
 import httpx
 
@@ -6,4 +11,5 @@ async def test():
     resp = await sh.get("https://api.bilibili.com/x/space/wbi/arc/search?mid=41368&ps=10&pn=1")
     print(resp.json())
 
-asyncio.run(test())
+if __name__ == "__main__":
+    asyncio.run(test())

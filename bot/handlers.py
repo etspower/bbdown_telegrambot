@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import logging
 import os
@@ -5,7 +6,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional
 
 from aiogram import Router, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -21,30 +22,30 @@ from database import (
 )
 from bilibili_api import get_up_info, get_up_videos
 from bbdown_fetcher import fetch_all_video_urls, parse_pending_videos
+from subprocess_executor import (
+    SubprocessExecutor, run_bbdown, run_bbdown_simple,
+    DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
 router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.from_user.id))
 
 URL_PATTERN = re.compile(r"(https?://(www\.)?(bilibili\.com|b23\.tv)/[^\s]+)")
-PROGRESS_PATTERN = re.compile(r"(\d+(\.\d+)?)%")
 
 # --- FSM States ---
 class DownloadFSM(StatesGroup):
     waiting_for_pages = State()
 
+class DownloadSession(StatesGroup):
+    """用于存储用户当前正在配置的下载任务上下文"""
+    waiting_for_quality = State()  # 等待选择画质
+    waiting_for_pages = State()    # 等待输入分P范围
+
 class SubFSM(StatesGroup):
     waiting_for_uid = State()
     waiting_for_keywords = State()
     waiting_for_edit_keywords = State()
-    
-# Temporary storage for video info per user
-user_sessions: Dict[int, dict] = {}
-
-def create_progress_bar(percentage: float, length: int = 15) -> str:
-    filled = int(length * percentage / 100)
-    empty = length - filled
-    return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"
 
 # ----------------------------
 # 1. Main Commands
@@ -116,20 +117,16 @@ async def cb_login_menu(callback: types.CallbackQuery):
 async def cb_login_check(callback: types.CallbackQuery):
     await callback.answer("正在检查凭证有效性，请稍候...", show_alert=False)
     # Check by running BBDown on a mock video, which is very fast and non-blocking
-    cmd = [BBDOWN_PATH, "BV1xx411c7mD", "--only-show-info"]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
-        )
-        stdout, _ = await process.communicate()
-        output = stdout.decode('utf-8', errors='ignore')
-        
-        if "尚未登录" in output or "需扫码" in output or "失效" in output or "过期" in output:
-            status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录]重新认证。"
-        else:
-            status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
-    except Exception as e:
-        status = f"❌ **验证时发生系统错误**：{e}"
+    result = await run_bbdown_simple(["BV1xx411c7mD", "--only-show-info"], DATA_DIR, timeout=30)
+    
+    if result.timed_out:
+        status = f"❌ **验证超时**（30秒），BBDown 可能卡死。请重启机器人或重新扫码登录。"
+    elif result.error:
+        status = f"❌ **验证时发生系统错误**：{result.error}"
+    elif "尚未登录" in result.output or "需扫码" in result.output or "失效" in result.output or "过期" in result.output:
+        status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录]重新认证。"
+    else:
+        status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
         
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 返回登录菜单", callback_data="set_login_menu"))
@@ -502,30 +499,29 @@ async def cb_sub_v_p(callback: types.CallbackQuery):
 # 3. Download Trigger & Flow
 # ----------------------------
 @router.callback_query(F.data.startswith("directdl_"))
-async def cb_directdl(callback: types.CallbackQuery):
+async def cb_directdl(callback: types.CallbackQuery, state: FSMContext):
     bvid = callback.data.replace("directdl_", "")
-    await callback.answer("任务已安排并放入队列！", show_alert=False)
-    # Simulate a user message to trigger standard handle_bilibili_link routine
+    await callback.answer("任务已安排！", show_alert=False)
     url = f"https://www.bilibili.com/video/{bvid}"
-    fake_msg = callback.message
-    fake_msg.text = url
-    fake_msg.from_user = callback.from_user
-    await handle_bilibili_link(fake_msg, FSMContext(storage=None, key=None)) # We pass fake FSM if needed or just let standard entry handle it.
-    # Actually, it's safer to directly fetch info and show formats:
-    await trigger_download_selection(callback.message, callback.from_user.id, url)
+    # 使用 FSMContext 避免竞态条件
+    await trigger_download_selection(callback.message, state, url)
 
-async def trigger_download_selection(message: types.Message, user_id: int, url: str):
+async def trigger_download_selection(message: types.Message, state: FSMContext, url: str):
+    """解析视频并让用户选择格式/分P"""
+    await state.clear()
+    
     status_msg = await message.answer(f"🔍 解析视频: `{url}`...", parse_mode="Markdown")
     info = await get_video_info(url)
     if not info:
         await status_msg.edit_text("❌ 解析失败，请确认该视频公开可见。")
         return
         
-    user_sessions[user_id] = {
-        "url": url,
-        "title": info["title"],
-        "total_pages": info["total_pages"]
-    }
+    # 使用 FSMContext 存储会话状态，避免全局字典的竞态条件
+    await state.update_data(
+        url=url,
+        title=info["title"],
+        total_pages=info["total_pages"]
+    )
     
     parts = info.get("parts", [])
     if parts and len(parts) > 1:
@@ -561,29 +557,19 @@ async def handle_bilibili_link(message: types.Message, state: FSMContext):
     await state.clear()
     match = URL_PATTERN.search(message.text)
     if not match: return
-    await trigger_download_selection(message, message.from_user.id, match.group(1))
+    await trigger_download_selection(message, state, match.group(1))
 
 async def get_video_info(url: str) -> Optional[dict]:
-    cmd = [BBDOWN_PATH, url, "--only-show-info", "--show-all"]
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
-        )
-        stdout, _ = await process.communicate()
-    except Exception as e:
+    result = await run_bbdown_simple([url, "--only-show-info", "--show-all"], DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
+    if result.return_code != 0:
         return None
-
-    if process.returncode != 0: return None
-
-    try: output = stdout.decode('utf-8')
-    except: output = stdout.decode('gbk', errors='ignore')
     
     title = "Unknown Title"
     qualities = []
     total_pages = 1
     parts = []
     
-    for line in output.split('\n'):
+    for line in result.output.split('\n'):
         if "视频标题:" in line: title = line.split("视频标题:", 1)[1].strip()
         if "个分P" in line:
             m = re.search(r'(\d+)\s*个分P', line)
@@ -600,12 +586,15 @@ async def get_video_info(url: str) -> Optional[dict]:
 # ----------------------------
 @router.callback_query(F.data.startswith("dlq_"))
 async def handle_quality_selection(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if user_id not in user_sessions: return await callback.answer("Session expired. Send link again.", show_alert=True)
-        
+    data = await state.get_data()
+    if not data or "url" not in data:
+        return await callback.answer("会话已过期，请重新发送视频链接。", show_alert=True)
+    
     action = callback.data.replace("dlq_", "")
-    user_sessions[user_id]["action"] = action
-    total_pages = user_sessions[user_id]["total_pages"]
+    # 将画质选项存入 FSM
+    await state.update_data(action=action)
+    
+    total_pages = data.get("total_pages", 1)
     
     builder = InlineKeyboardBuilder()
     if total_pages > 1:
@@ -619,31 +608,33 @@ async def handle_quality_selection(callback: types.CallbackQuery, state: FSMCont
 
 @router.callback_query(F.data.startswith("dlp_"))
 async def handle_page_selection(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if user_id not in user_sessions: return await callback.answer("Session expired. Send link again.", show_alert=True)
-        
+    data = await state.get_data()
+    if not data or "url" not in data:
+        return await callback.answer("会话已过期，请重新发送视频链接。", show_alert=True)
+    
     page_action = callback.data.replace("dlp_", "")
-    total_pages = user_sessions[user_id]["total_pages"]
+    total_pages = data.get("total_pages", 1)
     
     if page_action == "custom":
-        await state.set_state(DownloadFSM.waiting_for_pages)
+        await state.set_state(DownloadSession.waiting_for_pages)
         await callback.message.edit_text("✏️ **请求自定义输入页数：**\n\n请直接回复本条，输入你想下载的页面。\n举个例子：\n`1-3`（代表下载 1,2,3 分P）\n`1,4,7`（代表离散下载）", parse_mode="Markdown")
         return
     elif page_action == "all": pages = list(range(1, total_pages + 1))
     elif page_action == "1": pages = [1]
     else: pages = [1]
-        
-    await start_multi_download(callback.message, user_id, pages)
+    
+    # 从 FSM 获取完整 session 数据并开始下载
+    await start_multi_download(callback.message, data, pages)
 
-@router.message(DownloadFSM.waiting_for_pages)
+@router.message(DownloadSession.waiting_for_pages)
 async def process_custom_pages(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id not in user_sessions:
+    data = await state.get_data()
+    if not data or "url" not in data:
         await state.clear()
-        return await message.answer("Session expired. Send link again.")
+        return await message.answer("会话已过期，请重新发送视频链接。")
         
     text = message.text.replace(" ", "").replace("，", ",")
-    total_pages = user_sessions[user_id]["total_pages"]
+    total_pages = data.get("total_pages", 1)
     pages = []
     
     try:
@@ -664,15 +655,127 @@ async def process_custom_pages(message: types.Message, state: FSMContext):
         
     await state.clear()
     status_msg = await message.answer("✅ 自定义页数锁定，开始提取队列...")
-    await start_multi_download(status_msg, user_id, pages)
+    await start_multi_download(status_msg, data, pages)
 
-async def start_multi_download(status_msg: types.Message, user_id: int, pages: list[int]):
-    session = user_sessions.pop(user_id, None)
-    if not session: return await status_msg.edit_text("Session expired.")
+async def start_multi_download(status_msg: types.Message, session: dict, pages: list[int]):
+    """开始多P下载任务 - 使用统一的 SubprocessExecutor"""
+    if not session or "url" not in session:
+        return await status_msg.edit_text("会话数据无效。")
         
     url = session["url"]
-    action = session["action"]
-    title = session["title"]
+    action = session.get("action", "best")
+    title = session.get("title", "Unknown")
+    
+    cmd_args = [url]
+    if action == "audio": cmd_args.append("--audio-only")
+    elif action == "danmaku": cmd_args.append("--danmaku")
+    elif action == "sub": cmd_args.append("--sub-only")
+    
+    # 使用 URL hash 作为下载目录标识
+    import hashlib
+    dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
+    dl_dir = Path(DATA_DIR) / "downloads" / dl_id
+    dl_dir.mkdir(parents=True, exist_ok=True)
+    
+    await status_msg.edit_text(f"🚀 已排队 {len(pages)} 个任务。\n当前: P{pages[0]}")
+    
+    for i, p in enumerate(pages):
+        current_cmd_args = cmd_args.copy()
+        current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
+        
+        try: 
+            await status_msg.edit_text(f"📥 **拉取数据库 P{p}** ({i+1}/{len(pages)})...\n标题: `{title}`", parse_mode="Markdown")
+        except: pass
+        
+        # 使用统一的 SubprocessExecutor
+        executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
+        
+        last_update_time = time.time()
+        last_percentage = 0.0
+        current_text = ""
+        
+        async def flush_ui(text: str, force: bool = False):
+            nonlocal last_update_time, current_text
+            current_time = time.time()
+            if force or (current_time - last_update_time) >= 3.0:
+                full_text = f"📥 **正在进行任务 P{p}** ({i+1}/{len(pages)})\n{text}"
+                if full_text != current_text:
+                    try:
+                        await status_msg.edit_text(full_text, parse_mode="Markdown")
+                        current_text = full_text
+                        last_update_time = current_time
+                    except Exception: pass
+
+        try:
+            async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
+                if abs(progress.percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
+                    bar = create_progress_bar(progress.percentage)
+                    await flush_ui(f"`{bar}`", force=True)
+                    last_percentage = progress.percentage
+                elif progress.percentage == 100.0:
+                    await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+            
+            result = await executor.wait()
+            
+        except Exception as e:
+            logger.error(f"Error during P{p} download: {e}")
+            await executor.kill()
+            await status_msg.answer(f"❌ P{p} 下载出错: {e}")
+            continue
+        
+        if result.timed_out:
+            await status_msg.answer(f"❌ **下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
+            for f in dl_dir.glob("*"):
+                try: os.remove(f)
+                except: pass
+            continue
+            
+        if result.return_code != 0:
+            await status_msg.answer(f"❌ 下载 P{p} 失败, 错误代码 {result.return_code}。")
+            for f in dl_dir.glob("*"):
+                try: os.remove(f)
+                except: pass
+            continue
+
+        await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
+        await asyncio.sleep(1.5)
+        
+        downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
+        if not downloaded_files:
+            await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
+            try: shutil.rmtree(dl_dir)
+            except: pass
+            continue
+            
+        target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
+        try:
+            file = FSInputFile(str(target_file))
+            file_cap = f"{title} (P{p})"
+            if target_file.suffix.lower() == ".mp4": await status_msg.answer_video(file, caption=file_cap)
+            elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]: await status_msg.answer_audio(file, caption=file_cap)
+            else: await status_msg.answer_document(file, caption=file_cap)
+            await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
+        except Exception as e:
+            logger.error(f"Failed to send file: {e}")
+            await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
+        finally:
+            try: shutil.rmtree(dl_dir)
+            except: pass
+                    
+    await status_msg.answer(f"🎉 **整个合并列传周期结束！**\n一共安全卸货 {len(pages)} 单内容。", parse_mode="Markdown")
+    """开始多P下载任务
+    
+    Args:
+        status_msg: 用于更新进度的消息
+        session: 从 FSMContext 获取的会话数据 (包含 url, title, action 等)
+        pages: 要下载的分P列表
+    """
+    if not session or "url" not in session:
+        return await status_msg.edit_text("会话数据无效。")
+        
+    url = session["url"]
+    action = session.get("action", "best")
+    title = session.get("title", "Unknown")
     
     cmd_args = [url]
     if action == "audio": cmd_args.append("--audio-only")
@@ -698,11 +801,12 @@ async def start_multi_download(status_msg: types.Message, user_id: int, pages: l
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=DATA_DIR
             )
         except Exception as e:
-            await status_msg.answer(f"❌ P{p} 阶段异常: {e}"); continue
+            await status_msg.answer(f"�❌ P{p} 阶段异常: {e}"); continue
 
         last_update_time = time.time()
         last_percentage = 0.0
         current_text = ""
+        download_timed_out = False
         
         async def flush_ui(text: str, force: bool = False):
             nonlocal last_update_time, current_text
@@ -716,33 +820,63 @@ async def start_multi_download(status_msg: types.Message, user_id: int, pages: l
                     except Exception: pass
 
         buffer = bytearray()
-        while True:
-            chunk = await process.stdout.read(1024)
-            if not chunk: break
-            buffer.extend(chunk)
-            while b'\r' in buffer or b'\n' in buffer:
-                if b'\r' in buffer and b'\n' in buffer:
-                    idx_r = buffer.find(b'\r'); idx_n = buffer.find(b'\n')
-                    idx = min(idx_r, idx_n) if idx_r != -1 and idx_n != -1 else max(idx_r, idx_n)
-                elif b'\r' in buffer: idx = buffer.find(b'\r')
-                else: idx = buffer.find(b'\n')
-                line_bytes = buffer[:idx]; del buffer[:idx+1]
-                if not line_bytes: continue
-                try: decoded_line = line_bytes.decode('utf-8').strip()
-                except: decoded_line = line_bytes.decode('gbk', errors='ignore').strip()
-                if not decoded_line: continue
-                prog_match = PROGRESS_PATTERN.search(decoded_line)
-                if prog_match:
-                    try:
-                        percentage = float(prog_match.group(1))
-                        if abs(percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
-                            bar = create_progress_bar(percentage)
-                            await flush_ui(f"`{bar}`", force=True)
-                            last_percentage = percentage
-                        elif percentage == 100.0: await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
-                    except: pass
-                    
-        await process.wait()
+        try:
+            # 使用 wait_for 实现超时控制
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(process.stdout.read(1024), timeout=30)
+                except asyncio.TimeoutError:
+                    if process.returncode is not None:
+                        break
+                    continue
+                
+                if not chunk: break
+                buffer.extend(chunk)
+                while b'\r' in buffer or b'\n' in buffer:
+                    if b'\r' in buffer and b'\n' in buffer:
+                        idx_r = buffer.find(b'\r'); idx_n = buffer.find(b'\n')
+                        idx = min(idx_r, idx_n) if idx_r != -1 and idx_n != -1 else max(idx_r, idx_n)
+                    elif b'\r' in buffer: idx = buffer.find(b'\r')
+                    else: idx = buffer.find(b'\n')
+                    line_bytes = buffer[:idx]; del buffer[:idx+1]
+                    if not line_bytes: continue
+                    try: decoded_line = line_bytes.decode('utf-8').strip()
+                    except: decoded_line = line_bytes.decode('gbk', errors='ignore').strip()
+                    if not decoded_line: continue
+                    prog_match = PROGRESS_PATTERN.search(decoded_line)
+                    if prog_match:
+                        try:
+                            percentage = float(prog_match.group(1))
+                            if abs(percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
+                                bar = create_progress_bar(percentage)
+                                await flush_ui(f"`{bar}`", force=True)
+                                last_percentage = percentage
+                            elif percentage == 100.0: await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+                        except: pass
+                        
+            # 等待进程结束，设置超时
+            try:
+                await asyncio.wait_for(process.wait(), timeout=DEFAULT_DOWNLOAD_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning(f"P{p} download timeout after {DEFAULT_DOWNLOAD_TIMEOUT}s, killing process")
+                process.kill()
+                await process.wait()
+                download_timed_out = True
+                
+        except Exception as e:
+            logger.error(f"Error during P{p} download: {e}")
+            try: process.kill()
+            except: pass
+            await status_msg.answer(f"❌ P{p} 下载出错: {e}")
+            continue
+        
+        if download_timed_out:
+            await status_msg.answer(f"❌ **下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。\n请检查网络后重试。", parse_mode="Markdown")
+            for f in dl_dir.glob("*"):
+                try: os.remove(f)
+                except: pass
+            continue
+            
         if process.returncode != 0:
             await status_msg.answer(f"❌ 下载 P{p} 端点遭遇失败, 错误代码 {process.returncode}。")
             for f in dl_dir.glob("*"):
