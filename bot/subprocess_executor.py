@@ -167,9 +167,12 @@ class SubprocessExecutor:
         if self._process is None:
             return ProcessResult(return_code=-1, output="", error="Process not started")
         
-        # 基于已流逝时间计算剩余可用时间
-        elapsed = asyncio.get_running_loop().time() - self._start_time
-        remaining = max(0.0, self.timeout - elapsed)
+        # 防御：如果 run_with_progress 未被调用（_start_time 仍为 0），使用完整超时
+        if self._start_time == 0.0:
+            remaining = float(self.timeout)
+        else:
+            elapsed = asyncio.get_running_loop().time() - self._start_time
+            remaining = max(1.0, self.timeout - elapsed)  # 至少保留 1 秒
         
         try:
             await asyncio.wait_for(self._process.wait(), timeout=remaining)

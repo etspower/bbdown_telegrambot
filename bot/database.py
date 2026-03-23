@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func
@@ -43,7 +43,11 @@ class UpVideo(Base):
     url: Mapped[str] = mapped_column(String(200), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=True)
     parsed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
 
 
 async def init_db():

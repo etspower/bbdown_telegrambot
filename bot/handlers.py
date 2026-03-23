@@ -276,8 +276,8 @@ async def cb_sub_editkw(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sub_doeditkw_"))
 async def cb_sub_doeditkw(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    uid = parts[2]
+    # 格式: sub_doeditkw_{uid}_CLEAR
+    uid = callback.data.removeprefix("sub_doeditkw_").removesuffix("_CLEAR")
     await add_subscription(uid, callback.from_user.id, None, None) # will update because exist
     await state.clear()
     await callback.answer("✅ 已清空过滤词，今后该 UP 的所有新视频皆会收到通知！", show_alert=True)
@@ -726,16 +726,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
         
         if result.timed_out:
             await status_msg.answer(f"❌ **下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
-            for f in dl_dir.glob("*"):
-                try: os.remove(f)
-                except: pass
+            shutil.rmtree(dl_dir, ignore_errors=True)
             continue
             
         if result.return_code != 0:
             await status_msg.answer(f"❌ 下载 P{p} 失败, 错误代码 {result.return_code}。")
-            for f in dl_dir.glob("*"):
-                try: os.remove(f)
-                except: pass
+            shutil.rmtree(dl_dir, ignore_errors=True)
             continue
 
         await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)

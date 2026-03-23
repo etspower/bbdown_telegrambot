@@ -44,21 +44,34 @@ async def check_subscriptions(bot: Bot):
 
     for sub in subs:
         try:
-            # 直接调用封装好的高可用 API，内部处理 WBI 签名 + Cookie + 关键词过滤
-            videos = await get_up_videos(sub.uid, pn=1, ps=5, keywords=sub.keyword)
+            # 翻页检查：最多检查前 2 页（共 10 条），遇到已下载的视频则停止
+            # 列表按时间排序，新视频在前，下载过的视频在后面
+            max_pages = 2
+            new_video_found = True  # 控制是否继续翻页
+            
+            for page in range(1, max_pages + 1):
+                if not new_video_found:
+                    break
+                
+                videos = await get_up_videos(sub.uid, pn=page, ps=5, keywords=sub.keyword)
+                if not videos:
+                    break
 
-            for video in videos:
-                bvid = video['bvid']
-                title = video['title']
+                new_video_found = False  # 假设本页没有新视频
+                for video in videos:
+                    bvid = video['bvid']
+                    title = video['title']
 
-                if await is_bvid_downloaded(bvid):
-                    continue
+                    # 遇到已下载的视频，说明新视频已全部检测完，停止翻页
+                    if await is_bvid_downloaded(bvid):
+                        continue
 
-                logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
-                # 新视频入库，保持本地缓存与实时数据同步
-                await _upsert_new_video(sub.uid, bvid, title)
-                await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
-                await asyncio.sleep(5)
+                    new_video_found = True  # 本页有新视频
+                    logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
+                    # 新视频入库，保持本地缓存与实时数据同步
+                    await _upsert_new_video(sub.uid, bvid, title)
+                    await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
+                    await asyncio.sleep(5)
 
         except Exception as e:
             logger.error(f"Error checking sub {sub.uid}: {e}")

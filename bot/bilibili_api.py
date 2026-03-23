@@ -4,9 +4,12 @@ import time
 import urllib.parse
 import os
 import re
+import uuid
 from functools import reduce
 from hashlib import md5
 from typing import Tuple
+
+from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ _cookie_cache: dict = {
 }
 # BBDown 强制需要 buvid3，使用持久化的 UUID 以绕过 B 站风控的基础校验
 _buvid3_cache: str | None = None
-_BUVID3_FILE = os.path.join(os.path.dirname(__file__), ".buvid3")
+_BUVID3_FILE = os.path.join(DATA_DIR, ".buvid3")  # 写入持久化数据目录
 
 
 def _load_buvid3() -> str:
@@ -50,7 +53,6 @@ def _load_buvid3() -> str:
     except Exception:
         pass
     # 生成新的 UUID 并持久化
-    import uuid
     _buvid3_cache = str(uuid.uuid4()).upper()
     try:
         with open(_BUVID3_FILE, "w") as f:
