@@ -22,6 +22,12 @@ from subprocess_executor import run_bbdown, run_bbdown_simple, DEFAULT_SCAN_TIME
 
 logger = logging.getLogger(__name__)
 
+# ────────── BBDown 输出解析常量 ──────────
+# 集中管理所有 BBDown 输出格式字符串，便于上游版本变更时一处修改
+BBDOWN_TITLE_PREFIX = "视频标题:"
+BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
+BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]")
+
 # Matches Bilibili video URLs in BBDown output
 _VIDEO_URL_RE = re.compile(
     r"(https?://(?:www\.)?bilibili\.com/video/(?:av\d+|BV[\w]+))"
@@ -92,12 +98,15 @@ async def parse_one_video(bvid: str, url: str) -> Optional[str]:
     args = [url, "--only-show-info"]
     result = await run_bbdown_simple(args, DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
 
-    # Return code != 0 is not always fatal (BBDown sometimes exits 1 but still prints info)
     title = None
     for line in result.output.splitlines():
-        if "视频标题:" in line:
-            title = line.split("视频标题:", 1)[1].strip()
+        if BBDOWN_TITLE_PREFIX in line:
+            title = line.split(BBDOWN_TITLE_PREFIX, 1)[1].strip()
             break
+
+    if not title:
+        # 解析失败时记录原始输出，便于排查上游 BBDown 格式变更
+        logger.debug(f"Failed to parse title for {bvid}. BBDown output:\n{result.output[:500]}")
 
     if title:
         await update_video_title(bvid, title)
@@ -121,9 +130,13 @@ async def parse_pending_videos(
 
     parsed_count = 0
     for i, video in enumerate(pending):
-        title = await parse_one_video(video.bvid, video.url)
-        if title:
-            parsed_count += 1
+        try:
+            title = await parse_one_video(video.bvid, video.url)
+            if title:
+                parsed_count += 1
+        except Exception as e:
+            # 单个视频解析异常不中断整批任务，记录后继续
+            logger.warning(f"parse_one_video({video.bvid}) raised: {e}")
 
         # Call status every 5 videos or on the last one
         if status_callback and ((i + 1) % 5 == 0 or (i + 1) == total):

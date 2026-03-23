@@ -10,6 +10,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# BBDown 输出解析常量
+BBDOWN_TITLE_PREFIX = "视频标题:"
+BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
+BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]")
+
+# 文件类型常量，用于下载完成后按类型选择发送方式
+VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
+AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
+
 from bilibili_api import get_auth_cookies, HEADERS
 
 from aiogram import Router, types, F
@@ -452,7 +461,11 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
             except Exception:
                 pass
 
-        asyncio.create_task(background_parse())
+        task = asyncio.create_task(background_parse())
+        task.add_done_callback(
+            lambda t: logger.error(f"Background parse task failed: {t.exception()}")
+            if t.exception() else None
+        )
 
     else:
         try:
@@ -579,20 +592,23 @@ async def handle_bilibili_link(message: types.Message, state: FSMContext):
 async def get_video_info(url: str) -> Optional[dict]:
     result = await run_bbdown_simple([url, "--only-show-info", "--show-all"], DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
     if result.return_code != 0:
+        logger.debug(f"BBDown info failed for {url}: {result.output[:200]}")
         return None
-    
+
     title = "Unknown Title"
     total_pages = 1
     parts = []
-    
+
     for line in result.output.split('\n'):
-        if "视频标题:" in line: title = line.split("视频标题:", 1)[1].strip()
-        if "个分P" in line:
-            m = re.search(r'(\d+)\s*个分P', line)
-            if m: total_pages = int(m.group(1))
-        part_match = re.search(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]", line)
-        if part_match: parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
-            
+        if BBDOWN_TITLE_PREFIX in line:
+            title = line.split(BBDOWN_TITLE_PREFIX, 1)[1].strip()
+        m = BBDOWN_PAGES_PATTERN.search(line)
+        if m:
+            total_pages = int(m.group(1))
+        part_match = BBDOWN_PART_PATTERN.match(line)
+        if part_match:
+            parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
+
     return {"title": title, "total_pages": total_pages, "parts": parts}
 
 # ----------------------------
@@ -758,14 +774,20 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             if not downloaded_files:
                 await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
                 continue  # 不删目录，保留其他分 P 的文件
-                
-            target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
+
+            # 按文件类型分别发送，而非只取最大文件
+            # 这样弹幕(xml/ass)、字幕、音频各自独立发送，不会被视频文件吞掉
             try:
-                file = FSInputFile(str(target_file))
-                file_cap = f"{title} (P{p})"
-                if target_file.suffix.lower() == ".mp4": await status_msg.answer_video(file, caption=file_cap)
-                elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]: await status_msg.answer_audio(file, caption=file_cap)
-                else: await status_msg.answer_document(file, caption=file_cap)
+                for f in downloaded_files:
+                    ext = f.suffix.lower()
+                    fobj = FSInputFile(str(f))
+                    cap = f"{title} (P{p})"
+                    if ext in VIDEO_EXT:
+                        await status_msg.answer_video(fobj, caption=cap)
+                    elif ext in AUDIO_EXT:
+                        await status_msg.answer_audio(fobj, caption=cap)
+                    else:
+                        await status_msg.answer_document(fobj, caption=cap)
                 await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
             except Exception as e:
                 logger.error(f"Failed to send file: {e}")

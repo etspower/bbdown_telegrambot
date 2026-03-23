@@ -9,6 +9,8 @@ from database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
     mark_bvid_downloaded,
+    increment_retry_count,
+    MAX_RETRY,
     upsert_up_video_url,
     update_video_title,
 )
@@ -19,6 +21,10 @@ from subprocess_executor import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 文件类型常量（与 handlers.py 保持同步）
+VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
+AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 
 
 async def _upsert_new_video(uid: str, bvid: str, title: str):
@@ -86,16 +92,14 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...",
         parse_mode="Markdown"
     )
-    
+
     dl_dir = Path(DATA_DIR) / "downloads" / "auto" / bvid
     dl_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 使用统一的 SubprocessExecutor
+
     executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
-    
     last_update = asyncio.get_running_loop().time()
     last_pct = 0.0
-    
+
     try:
         async for progress in executor.run_with_progress(
             [BBDOWN_PATH, video_url, "--work-dir", str(dl_dir)],
@@ -106,32 +110,39 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
                 bar = create_progress_bar(progress.percentage)
                 try:
                     await msg.edit_text(f"Auto-downloading: **{title}**\n`{bar}`")
-                except:
+                except Exception:
                     pass
                 last_pct = progress.percentage
                 last_update = now
-        
+
         result = await executor.wait()
-        
+
     except Exception as e:
         logger.error(f"Error during auto-download: {e}")
         await executor.kill()
         await msg.edit_text(f"Auto-download error: {e}")
         return
-    
+
     if result.timed_out:
-        await msg.edit_text(f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。")
+        await msg.edit_text(
+            f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。"
+        )
         shutil.rmtree(dl_dir, ignore_errors=True)
         return
-    
+
     if result.return_code == 0:
-        downloaded_files = list(dl_dir.glob("*"))
+        downloaded_files = [f for f in dl_dir.glob("*") if f.is_file()]
         if downloaded_files:
-            target_file = max(downloaded_files, key=lambda p: p.stat().st_size)
             try:
                 await msg.edit_text("Uploading file...")
-                file = FSInputFile(str(target_file))
-                await bot.send_video(chat_id, file, caption=title)
+                for f in downloaded_files:
+                    fobj = FSInputFile(str(f))
+                    if f.suffix.lower() in VIDEO_EXT:
+                        await bot.send_video(chat_id, fobj, caption=title)
+                    elif f.suffix.lower() in AUDIO_EXT:
+                        await bot.send_audio(chat_id, fobj, caption=title)
+                    else:
+                        await bot.send_document(chat_id, fobj, caption=title)
                 await msg.delete()
                 await mark_bvid_downloaded(uid, bvid)
             except Exception as e:
@@ -141,5 +152,19 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     else:
         await msg.edit_text(f"Download failed with exit code: {result.return_code}")
 
-    # Cleanup: 删除整个下载目录及其内容
+    # 重试计数：失败时增加计数，达到上限后标记为放弃不再推送
+    retry_count = await increment_retry_count(uid, bvid)
+    if retry_count >= MAX_RETRY:
+        logger.warning(f"[{bvid}] Auto-download failed {retry_count} times, marking as abandoned.")
+        await mark_bvid_downloaded(uid, bvid)
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ 视频 **{title}** 推送失败 {retry_count} 次（超过 {MAX_RETRY} 次上限），已跳过。",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    # Cleanup
     shutil.rmtree(dl_dir, ignore_errors=True)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -7,6 +8,8 @@ from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text,
 from pathlib import Path
 
 from config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 # Ensure DATA_DIR exists
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
@@ -33,6 +36,7 @@ class DownloadHistory(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(50), nullable=False)
     bvid: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 class UpVideo(Base):
     """Stores all video URLs fetched via BBDown for a given UP master."""
@@ -53,11 +57,14 @@ class UpVideo(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Safe migration: add up_name column to existing subscriptions table
-        try:
+
+        # 安全的字段迁移：仅当列不存在时才 ADD COLUMN
+        # 不再用 try/except 吞掉所有异常，避免每次启动都打印被忽略的错误
+        result = await conn.execute(text("PRAGMA table_info(subscriptions)"))
+        existing_cols = [row[1] for row in result.fetchall()]
+        if "up_name" not in existing_cols:
             await conn.execute(text("ALTER TABLE subscriptions ADD COLUMN up_name VARCHAR(100)"))
-        except Exception:
-            pass
+            logger.info("Database migration: added 'up_name' column to subscriptions.")
 
 # ─────────────────────────── Subscriptions ────────────────────────────────
 
@@ -103,21 +110,48 @@ async def get_user_subscriptions(chat_id: int) -> list[Subscription]:
 
 # ─────────────────────────── Download History ─────────────────────────────
 
+MAX_RETRY = 3  # 超过此次数视为放弃，不再重试
+
 async def is_bvid_downloaded(bvid: str) -> bool:
+    """检查视频是否已完成下载（成功或已超过重试上限）。"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(DownloadHistory).where(DownloadHistory.bvid == bvid)
         )
-        return result.scalar_one_or_none() is not None
+        record = result.scalar_one_or_none()
+        if record is None:
+            return False
+        # 重试超过上限视为"已处理"，不再重复推送
+        return record.retry_count >= MAX_RETRY
 
 async def mark_bvid_downloaded(uid: str, bvid: str):
+    """标记视频为成功下载（插入或更新 retry_count=MAX_RETRY）。"""
     async with AsyncSessionLocal() as session:
-        try:
-            history = DownloadHistory(uid=uid, bvid=bvid)
-            session.add(history)
-            await session.commit()
-        except Exception:
-            await session.rollback()
+        result = await session.execute(
+            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.retry_count = MAX_RETRY
+        else:
+            session.add(DownloadHistory(uid=uid, bvid=bvid, retry_count=MAX_RETRY))
+        await session.commit()
+
+async def increment_retry_count(uid: str, bvid: str) -> int:
+    """对失败视频增加重试计数，返回增加后的值。首次记录时初始化为 1。"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.retry_count += 1
+            new_count = existing.retry_count
+        else:
+            session.add(DownloadHistory(uid=uid, bvid=bvid, retry_count=1))
+            new_count = 1
+        await session.commit()
+        return new_count
 
 # ─────────────────────────── UP Video Cache ───────────────────────────────
 

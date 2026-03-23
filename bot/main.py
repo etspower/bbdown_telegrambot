@@ -2,7 +2,9 @@ import asyncio
 import logging
 import re
 import os
+import shutil
 from io import BytesIO
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
@@ -148,6 +150,12 @@ def _cleanup_login_dir(path: str):
         logger.warning(f"Failed to cleanup login tmp dir {path}: {e}")
 
 async def main():
+    # 启动时清理残留的下载分片，避免磁盘被废弃文件占满
+    downloads_dir = Path(DATA_DIR) / "downloads"
+    if downloads_dir.exists():
+        shutil.rmtree(downloads_dir, ignore_errors=True)
+        logger.info("Cleaned up stale download directories on startup.")
+
     logger.info("Initializing database...")
     await init_db()
     
