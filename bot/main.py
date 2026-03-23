@@ -196,6 +196,7 @@ async def main():
     await bot.set_my_commands(commands)
     
     logger.info("Starting bot...")
+    await start_dummy_server()  # <--- 新增这一行，先启动假服务
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
