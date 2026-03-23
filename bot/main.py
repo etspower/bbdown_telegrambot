@@ -156,6 +156,20 @@ def _cleanup_login_dir(path: str):
     except Exception as e:
         logger.warning(f"Failed to cleanup login tmp dir {path}: {e}")
 
+# --- 新增的假服务代码开始 ---
+async def health_check(request):
+    return web.Response(text="BBDown Bot is running successfully on Hugging Face!")
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 7860)
+    await site.start()
+    logger.info("Dummy web server started on port 7860 for Hugging Face.")
+# --- 新增的假服务代码结束 ---
+
 async def main():
     # 启动时清理残留的下载分片，避免磁盘被废弃文件占满
     downloads_dir = Path(DATA_DIR) / "downloads"
