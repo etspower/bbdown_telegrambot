@@ -720,7 +720,6 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
         except Exception as e:
             logger.error(f"Error during P{p} download: {e}")
             await executor.kill()
-            await state.clear() if hasattr(state, 'clear') else None
             await status_msg.answer(f"❌ P{p} 下载出错: {e}")
             continue
         
