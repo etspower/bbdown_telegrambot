@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import httpx
 from aiogram import Bot
 from pathlib import Path
 import os
@@ -13,7 +12,7 @@ from database import (
     upsert_up_video_url,
     update_video_title,
 )
-from handlers import get_video_info
+from bilibili_api import get_up_videos
 from config import BBDOWN_PATH, DATA_DIR
 from subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
@@ -32,57 +31,48 @@ async def _upsert_new_video(uid: str, bvid: str, title: str):
     except Exception as e:
         logger.warning(f"Failed to upsert new video {bvid} to local cache: {e}")
 
+
 async def check_subscriptions(bot: Bot):
+    """定时轮询订阅列表，检查是否有新视频。
+    
+    直接调用 get_up_videos()，它内部处理了 WBI 签名、Cookie 和关键词过滤。
+    """
     logger.info("Running subscription check...")
     subs = await get_all_subscriptions()
     if not subs:
         return
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
+    for sub in subs:
+        try:
+            # 直接调用封装好的高可用 API，内部处理 WBI 签名 + Cookie + 关键词过滤
+            videos = await get_up_videos(sub.uid, pn=1, ps=5, keywords=sub.keyword)
 
-    async with httpx.AsyncClient(headers=headers) as client:
-        for sub in subs:
-            try:
-                # 始终通过 WBI API 获取最新视频，本地缓存仅用于展示，不用于判断新视频
-                url = f"https://api.bilibili.com/x/space/wbi/arc/search?mid={sub.uid}&ps=5&tid=0&pn=1"
-                resp = await client.get(url, timeout=10.0)
-                data = resp.json()
+            for video in videos:
+                bvid = video['bvid']
+                title = video['title']
 
-                if data.get('code') != 0:
-                    logger.error(f"Failed to fetch videos for {sub.uid}: {data.get('message')}")
+                if await is_bvid_downloaded(bvid):
                     continue
 
-                vlist = data['data']['list']['vlist']
-                for video in vlist:
-                    bvid = video['bvid']
-                    title = video['title']
+                logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
+                # 新视频入库，保持本地缓存与实时数据同步
+                await _upsert_new_video(sub.uid, bvid, title)
+                await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
+                await asyncio.sleep(5)
 
-                    if await is_bvid_downloaded(bvid):
-                        continue
-
-                    # Apply keyword filter
-                    if sub.keyword:
-                        filter_keys = [k.strip().lower() for k in sub.keyword.replace('，', ',').split(',') if k.strip()]
-                        if filter_keys and not any(k in title.lower() for k in filter_keys):
-                            continue
-
-                    logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
-                    # 新视频入库，保持本地缓存与实时数据同步（第三阶段生态打通）
-                    await _upsert_new_video(sub.uid, bvid, title)
-                    await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
-                    await asyncio.sleep(5)
-
-            except Exception as e:
-                logger.error(f"Error checking sub {sub.uid}: {e}")
+        except Exception as e:
+            logger.error(f"Error checking sub {sub.uid}: {e}")
 
 
 async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):
     """自动下载任务 - 使用统一的 SubprocessExecutor"""
     video_url = f"https://www.bilibili.com/video/{bvid}"
     up_display = f" ({up_name})" if up_name else ""
-    msg = await bot.send_message(chat_id, f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...", parse_mode="Markdown")
+    msg = await bot.send_message(
+        chat_id,
+        f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...",
+        parse_mode="Markdown"
+    )
     
     dl_dir = Path(DATA_DIR) / "downloads" / "auto" / bvid
     dl_dir.mkdir(parents=True, exist_ok=True)

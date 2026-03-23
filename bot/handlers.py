@@ -34,9 +34,6 @@ router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.fro
 URL_PATTERN = re.compile(r"(https?://(www\.)?(bilibili\.com|b23\.tv)/[^\s]+)")
 
 # --- FSM States ---
-class DownloadFSM(StatesGroup):
-    waiting_for_pages = State()
-
 class DownloadSession(StatesGroup):
     """用于存储用户当前正在配置的下载任务上下文"""
     waiting_for_quality = State()  # 等待选择画质
@@ -374,7 +371,10 @@ async def cb_sub_v_full(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("sub_fetch_full_"))
 async def cb_sub_fetch_full(callback: types.CallbackQuery):
-    """Trigger BBDown to fetch all video URLs then parse titles for a UP master."""
+    """Trigger BBDown to fetch all video URLs then parse titles for a UP master.
+
+    URL 枚举同步完成，标题解析扔给后台 Task 执行，立刻返回用户响应。
+    """
     uid = callback.data.replace("sub_fetch_full_", "")
 
     subs = await get_user_subscriptions(callback.from_user.id)
@@ -389,7 +389,7 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
         parse_mode="Markdown"
     )
 
-    # Step 1: Fetch all URLs via BBDown -po -p ALL
+    # Step 1: Fetch all URLs via BBDown -po -p ALL (同步，等待完成)
     async def url_status(msg: str):
         try:
             await status_msg.edit_text(msg, parse_mode="Markdown")
@@ -398,7 +398,7 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
 
     new_count = await fetch_all_video_urls(uid, status_callback=url_status)
 
-    # Step 2: Parse pending titles
+    # Step 2: 检查待解析数量，立刻给用户返回进度
     unparsed = await get_unparsed_videos(uid, limit=500)
     pending_total = len(unparsed)
 
@@ -406,37 +406,42 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
         try:
             await status_msg.edit_text(
                 f"✅ URL 枚举完毕，新增 **{new_count}** 条。\n"
-                f"⚙️ 开始解析视频标题（共 **{pending_total}** 条待解析），每条约需 2-5 秒…",
+                f"⚙️ 开始后台解析视频标题（共 **{pending_total}** 条），将在完成后通知你…",
                 parse_mode="Markdown"
             )
         except Exception:
             pass
 
-        async def parse_status(done: int, total: int):
-            pct = done * 100 // total
-            bar_filled = int(done * 20 // total)
-            bar = "▓" * bar_filled + "░" * (20 - bar_filled)
+        # 后台任务：异步解析标题，不阻塞 Handler
+        async def background_parse():
+            async def parse_status(done: int, total: int):
+                pct = done * 100 // total if total > 0 else 100
+                bar_filled = int(done * 20 // total) if total > 0 else 20
+                bar = "▓" * bar_filled + "░" * (20 - bar_filled)
+                try:
+                    await status_msg.edit_text(
+                        f"⚙️ **正在解析视频标题**\n"
+                        f"进度: `{done}/{total}` 条\n"
+                        f"`{bar}` {pct}%",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
+            parsed = await parse_pending_videos(uid, status_callback=parse_status)
+
             try:
                 await status_msg.edit_text(
-                    f"⚙️ **正在解析视频标题**\n"
-                    f"进度: `{done}/{total}` 条\n"
-                    f"`{bar}` {pct}%",
+                    f"🎉 **抓取解析完毕！**\n"
+                    f"新增 URL: **{new_count}** 条 | 成功解析标题: **{parsed}** 条\n\n"
+                    f"请点击「浏览本地视频列表」查看全部。",
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
 
-        parsed = await parse_pending_videos(uid, status_callback=parse_status)
+        asyncio.create_task(background_parse())
 
-        try:
-            await status_msg.edit_text(
-                f"🎉 **抓取解析完毕！**\n"
-                f"新增 URL: **{new_count}** 条 | 成功解析标题: **{parsed}** 条\n\n"
-                f"正在载入视频列表…",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
     else:
         try:
             await status_msg.edit_text(
@@ -446,7 +451,7 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
         except Exception:
             pass
 
-    # Show the paginated list
+    # 立刻展示列表（URL 已完整，标题待后台补全）
     await show_full_video_list(status_msg, uid, up_name, page=1, is_edit=True)
 
 
