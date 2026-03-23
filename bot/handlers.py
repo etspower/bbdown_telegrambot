@@ -725,13 +725,13 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             continue
         
         if result.timed_out:
-            await status_msg.answer(f"❌ **下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
-            shutil.rmtree(dl_dir, ignore_errors=True)
+            await status_msg.answer(f"❌ **P{p} 下载超时，已强制终止 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
+            # 不删除 dl_dir，因为可能包含其他分 P 的已下载文件，继续下一个分 P
             continue
             
         if result.return_code != 0:
-            await status_msg.answer(f"❌ 下载 P{p} 失败, 错误代码 {result.return_code}。")
-            shutil.rmtree(dl_dir, ignore_errors=True)
+            await status_msg.answer(f"❌ P{p} 下载失败, 错误代码 {result.return_code}。")
+            # 不删除 dl_dir，保留其他分 P 的已下载文件
             continue
 
         await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
@@ -740,9 +740,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
         downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
         if not downloaded_files:
             await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
-            try: shutil.rmtree(dl_dir)
-            except: pass
-            continue
+            continue  # 不删目录，保留其他分 P 的文件
             
         target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
         try:
@@ -755,7 +753,4 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
         except Exception as e:
             logger.error(f"Failed to send file: {e}")
             await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
-        finally:
-            try: shutil.rmtree(dl_dir)
-            except: pass
                     

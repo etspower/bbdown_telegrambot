@@ -57,16 +57,16 @@ async def check_subscriptions(bot: Bot):
                 if not videos:
                     break
 
-                new_video_found = False  # 假设本页没有新视频
                 for video in videos:
                     bvid = video['bvid']
                     title = video['title']
 
-                    # 遇到已下载的视频，说明新视频已全部检测完，停止翻页
+                    # 遇到已下载的视频（列表按时间倒序，旧视频在后）
+                    # 说明已到达旧内容边界，停止翻页
                     if await is_bvid_downloaded(bvid):
-                        continue
+                        new_video_found = False
+                        break
 
-                    new_video_found = True  # 本页有新视频
                     logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
                     # 新视频入库，保持本地缓存与实时数据同步
                     await _upsert_new_video(sub.uid, bvid, title)
@@ -128,12 +128,13 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         downloaded_files = list(dl_dir.glob("*"))
         if downloaded_files:
             target_file = max(downloaded_files, key=lambda p: p.stat().st_size)
+            # 先标记已下载，再上传，避免上传失败导致重复推送
+            await mark_bvid_downloaded(uid, bvid)
             try:
                 await msg.edit_text("Uploading file...")
                 file = FSInputFile(str(target_file))
                 await bot.send_video(chat_id, file, caption=title)
                 await msg.delete()
-                await mark_bvid_downloaded(uid, bvid)
             except Exception as e:
                 await msg.edit_text(f"Upload failed: {e}")
         else:

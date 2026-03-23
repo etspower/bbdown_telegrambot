@@ -70,7 +70,6 @@ def _load_cookies_from_disk() -> dict:
     buvid3 = _load_buvid3()  # 使用持久化的 UUID，避免 B 站风控拦截
     cookies = {"buvid3": buvid3}
     try:
-        from config import DATA_DIR
         data_file = os.path.join(DATA_DIR, "BBDown.data")
         if os.path.exists(data_file):
             with open(data_file, "rb") as f:
@@ -94,7 +93,6 @@ def get_auth_cookies() -> dict:
     """
     global _cookie_cache
     try:
-        from config import DATA_DIR
         data_file = os.path.join(DATA_DIR, "BBDown.data")
         current_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0.0
     except Exception:
