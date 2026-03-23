@@ -9,7 +9,9 @@ from aiogram.types import FSInputFile
 from database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
-    mark_bvid_downloaded
+    mark_bvid_downloaded,
+    upsert_up_video_url,
+    update_video_title,
 )
 from handlers import get_video_info
 from config import BBDOWN_PATH, DATA_DIR
@@ -18,6 +20,17 @@ from subprocess_executor import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _upsert_new_video(uid: str, bvid: str, title: str):
+    """将 API 发现的新视频写入本地缓存，保持 UpVideo 表与实时数据同步。"""
+    try:
+        url = f"https://www.bilibili.com/video/{bvid}"
+        await upsert_up_video_url(uid, bvid, url)
+        if title:
+            await update_video_title(bvid, title)
+    except Exception as e:
+        logger.warning(f"Failed to upsert new video {bvid} to local cache: {e}")
 
 async def check_subscriptions(bot: Bot):
     logger.info("Running subscription check...")
@@ -32,30 +45,7 @@ async def check_subscriptions(bot: Bot):
     async with httpx.AsyncClient(headers=headers) as client:
         for sub in subs:
             try:
-                # --- Strategy 1: Use local up_videos cache (populated via BBDown fetch) ---
-                from database import get_recent_videos_by_uid
-                recent_local = await get_recent_videos_by_uid(sub.uid, limit=10)
-
-                if recent_local:
-                    for video in recent_local:
-                        bvid = video.bvid
-                        title = video.title or ""
-
-                        if await is_bvid_downloaded(bvid):
-                            continue
-
-                        # Apply keyword filter
-                        if sub.keyword:
-                            filter_keys = [k.strip().lower() for k in sub.keyword.replace('，', ',').split(',') if k.strip()]
-                            if filter_keys and not any(k in title.lower() for k in filter_keys):
-                                continue
-
-                        logger.info(f"[Local cache] New video for {sub.uid}: {title} ({bvid})")
-                        await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
-                        await asyncio.sleep(5)
-                    continue  # Skip WBI API for this sub since we have local cache
-
-                # --- Strategy 2: Fall back to Bilibili WBI API ---
+                # 始终通过 WBI API 获取最新视频，本地缓存仅用于展示，不用于判断新视频
                 url = f"https://api.bilibili.com/x/space/wbi/arc/search?mid={sub.uid}&ps=5&tid=0&pn=1"
                 resp = await client.get(url, timeout=10.0)
                 data = resp.json()
@@ -79,6 +69,8 @@ async def check_subscriptions(bot: Bot):
                             continue
 
                     logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
+                    # 新视频入库，保持本地缓存与实时数据同步（第三阶段生态打通）
+                    await _upsert_new_video(sub.uid, bvid, title)
                     await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
                     await asyncio.sleep(5)
 

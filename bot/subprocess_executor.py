@@ -121,7 +121,9 @@ class SubprocessExecutor:
                     break
                 
                 line_bytes = buffer[:idx]
-                del buffer[:idx + 1]
+                # 兼容 \r\n：如果下一个字节是 \n，一并跳过
+                skip = 2 if (idx + 1 < len(buffer) and buffer[idx] == ord('\r') and buffer[idx + 1] == ord('\n')) else 1
+                del buffer[:idx + skip]
                 
                 if not line_bytes:
                     continue
@@ -143,11 +145,14 @@ class SubprocessExecutor:
                         pass
     
     def _find_line_end(self, buffer: bytearray) -> int:
-        """找到行结束符位置"""
+        """找到行结束符位置，兼容 \\n、\\r、\\r\\n"""
         idx_r = buffer.find(b'\r')
         idx_n = buffer.find(b'\n')
-        
+
         if idx_r != -1 and idx_n != -1:
+            # \r\n 连续时，截到 \r，外部 del buffer[:idx+2] 跳过两个字节
+            if idx_n == idx_r + 1:
+                return idx_r  # 调用方需处理 \r\n 的两字节删除
             return min(idx_r, idx_n)
         elif idx_r != -1:
             return idx_r
@@ -184,6 +189,7 @@ class SubprocessExecutor:
 async def run_bbdown(
     args: List[str],
     cwd: str,
+    bbdown_path: str = None,
     timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
     progress_callback: Optional[Callable[[ProgressUpdate], Awaitable[None]]] = None,
 ) -> ProcessResult:
@@ -193,14 +199,18 @@ async def run_bbdown(
     Args:
         args: BBDown 参数列表（不含 bbdown 可执行文件本身）
         cwd: 工作目录
+        bbdown_path: BBDown 可执行文件路径（如果为 None，从 config 导入）
         timeout: 总超时时间（秒）
         progress_callback: 可选的进度回调函数
     
     Returns:
         ProcessResult 对象
     """
-    from config import BBDOWN_PATH
-    cmd = [BBDOWN_PATH] + args
+    if bbdown_path is None:
+        from config import BBDOWN_PATH
+        bbdown_path = BBDOWN_PATH
+    
+    cmd = [bbdown_path] + args
     
     executor = SubprocessExecutor(timeout=timeout)
     

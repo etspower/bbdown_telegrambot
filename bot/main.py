@@ -4,7 +4,6 @@ import re
 import os
 from io import BytesIO
 
-import qrcode
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import BufferedInputFile
@@ -119,7 +118,14 @@ async def cmd_login(message: types.Message):
         await process.wait()
         
     finally:
-        # 无论成功失败，都清理临时目录
+        # 在清理临时目录前，先把凭证文件拷贝回主数据目录
+        credentials_src = os.path.join(login_tmp_dir, "BBDown.data")
+        if os.path.exists(credentials_src):
+            import shutil
+            dest = os.path.join(DATA_DIR, "BBDown.data")
+            shutil.copy2(credentials_src, dest)
+            logger.info(f"Credentials saved to {dest}")
+        # 清理临时目录
         _cleanup_login_dir(login_tmp_dir)
     
     if process.returncode == 0:
