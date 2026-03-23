@@ -2,7 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot
 from pathlib import Path
-import os
+import shutil
 from aiogram.types import FSInputFile
 
 from database import (
@@ -80,7 +80,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     # 使用统一的 SubprocessExecutor
     executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
     
-    last_update = asyncio.get_event_loop().time()
+    last_update = asyncio.get_running_loop().time()
     last_pct = 0.0
     
     try:
@@ -88,7 +88,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
             [BBDOWN_PATH, video_url, "--work-dir", str(dl_dir)],
             DATA_DIR
         ):
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if (progress.percentage - last_pct) >= 20.0 or (now - last_update) >= 15.0:
                 bar = create_progress_bar(progress.percentage)
                 try:
@@ -108,9 +108,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     
     if result.timed_out:
         await msg.edit_text(f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。")
-        for f in dl_dir.glob("*"):
-            try: os.remove(f)
-            except Exception as e: logger.error(f"Cleanup error: {e}")
+        shutil.rmtree(dl_dir, ignore_errors=True)
         return
     
     if result.return_code == 0:
@@ -130,9 +128,5 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     else:
         await msg.edit_text(f"Download failed with exit code: {result.return_code}")
 
-    # Cleanup
-    for f in dl_dir.glob("*"):
-        try:
-            os.remove(f)
-        except Exception as e:
-            logger.error(f"Cleanup error auto-dir: {e}")
+    # Cleanup: 删除整个下载目录及其内容
+    shutil.rmtree(dl_dir, ignore_errors=True)

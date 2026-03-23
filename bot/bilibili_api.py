@@ -31,6 +31,33 @@ _cookie_cache: dict = {
     "cookies": None,       # 缓存的 cookies dict
     "file_mtime": 0.0,     # 上次读取时的文件修改时间，用于检测文件变化
 }
+# BBDown 强制需要 buvid3，使用持久化的 UUID 以绕过 B 站风控的基础校验
+_buvid3_cache: str | None = None
+_BUVID3_FILE = os.path.join(os.path.dirname(__file__), ".buvid3")
+
+
+def _load_buvid3() -> str:
+    """加载或生成持久化的 buvid3（UUID 格式），避免每次请求都伪造假值。"""
+    global _buvid3_cache
+    if _buvid3_cache:
+        return _buvid3_cache
+    try:
+        if os.path.exists(_BUVID3_FILE):
+            with open(_BUVID3_FILE, "r") as f:
+                _buvid3_cache = f.read().strip()
+                if _buvid3_cache:
+                    return _buvid3_cache
+    except Exception:
+        pass
+    # 生成新的 UUID 并持久化
+    import uuid
+    _buvid3_cache = str(uuid.uuid4()).upper()
+    try:
+        with open(_BUVID3_FILE, "w") as f:
+            f.write(_buvid3_cache)
+    except Exception:
+        pass
+    return _buvid3_cache
 
 
 def _load_cookies_from_disk() -> dict:
@@ -38,7 +65,8 @@ def _load_cookies_from_disk() -> dict:
     
     仅在启动时或检测到文件变化时调用，不在热路径中执行。
     """
-    cookies = {"buvid3": "xyj114514"}
+    buvid3 = _load_buvid3()  # 使用持久化的 UUID，避免 B 站风控拦截
+    cookies = {"buvid3": buvid3}
     try:
         from config import DATA_DIR
         data_file = os.path.join(DATA_DIR, "BBDown.data")

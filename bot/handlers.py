@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -206,8 +207,7 @@ async def finish_add_sub(msg_obj: types.Message, state: FSMContext, keywords: st
         # Prompt video page 1 directly
         await show_up_videos_gui(msg_obj, uid, up_name, 1)
     else:
-        builder = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 返回列表", callback_data="set_subs_list"))
-        await msg_obj.answer("❌ 订阅失败，您可能已经在此对话中订阅过该 UP 主。", reply_markup=builder.as_markup())
+        await msg_obj.answer(f"✅ **订阅已更新！**\n👤 UP: {up_name}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}\n\n该 UP 已存在，关键词已更新。", parse_mode="Markdown")
 
 # --- Subscription Details ---
 @router.callback_query(F.data.startswith("sub_detail_"))
@@ -570,7 +570,6 @@ async def get_video_info(url: str) -> Optional[dict]:
         return None
     
     title = "Unknown Title"
-    qualities = []
     total_pages = 1
     parts = []
     
@@ -579,12 +578,10 @@ async def get_video_info(url: str) -> Optional[dict]:
         if "个分P" in line:
             m = re.search(r'(\d+)\s*个分P', line)
             if m: total_pages = int(m.group(1))
-        match = re.search(r"^\s*(\d+)\.\s*(.*?)$", line)
-        if match and "画质代码:" not in line: qualities.append({"id": match.group(1), "name": match.group(2).strip()})
         part_match = re.search(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]", line)
         if part_match: parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
             
-    return {"title": title, "qualities": qualities, "total_pages": total_pages, "parts": parts}
+    return {"title": title, "total_pages": total_pages, "parts": parts}
 
 # ----------------------------
 # 4. Old Flow Handlers (Selections)
@@ -677,7 +674,6 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     elif action == "sub": cmd_args.append("--sub-only")
     
     # 使用 URL hash 作为下载目录标识
-    import hashlib
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
     dl_dir = Path(DATA_DIR) / "downloads" / dl_id
     dl_dir.mkdir(parents=True, exist_ok=True)

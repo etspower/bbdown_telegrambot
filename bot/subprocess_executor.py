@@ -65,6 +65,7 @@ class SubprocessExecutor:
         self._process: Optional[asyncio.subprocess.Process] = None
         self._output_lines: List[str] = []
         self._timed_out: bool = False
+        self._start_time: float = 0.0  # 记录整体开始时间，避免超时重复计时
     
     async def run_with_progress(
         self,
@@ -82,6 +83,7 @@ class SubprocessExecutor:
         """
         self._output_lines = []
         self._timed_out = False
+        self._start_time = asyncio.get_running_loop().time()  # 记录开始时间
         
         try:
             self._process = await asyncio.create_subprocess_exec(
@@ -161,12 +163,16 @@ class SubprocessExecutor:
         return -1
     
     async def wait(self) -> ProcessResult:
-        """等待进程结束并返回结果"""
+        """等待进程结束并返回结果，超时基于整体运行时间计算。"""
         if self._process is None:
             return ProcessResult(return_code=-1, output="", error="Process not started")
         
+        # 基于已流逝时间计算剩余可用时间
+        elapsed = asyncio.get_running_loop().time() - self._start_time
+        remaining = max(0.0, self.timeout - elapsed)
+        
         try:
-            await asyncio.wait_for(self._process.wait(), timeout=self.timeout)
+            await asyncio.wait_for(self._process.wait(), timeout=remaining)
         except asyncio.TimeoutError:
             logger.warning(f"Process timeout after {self.timeout}s, killing...")
             self._process.kill()

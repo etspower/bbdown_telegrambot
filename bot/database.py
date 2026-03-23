@@ -58,21 +58,26 @@ async def init_db():
 # ─────────────────────────── Subscriptions ────────────────────────────────
 
 async def add_subscription(uid: str, chat_id: int, keyword: str = None, up_name: str = None) -> bool:
+    """
+    添加或更新订阅。
+    Returns True if newly created, False if updated existing subscription.
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Subscription).where(Subscription.uid == uid, Subscription.chat_id == chat_id)
         )
         sub = result.scalar_one_or_none()
         if sub:
+            # 更新已有订阅
             sub.keyword = keyword
             if up_name:
                 sub.up_name = up_name
             await session.commit()
-            return True
+            return False  # 已存在，本次为更新
         new_sub = Subscription(uid=uid, chat_id=chat_id, keyword=keyword, up_name=up_name)
         session.add(new_sub)
         await session.commit()
-        return True
+        return True  # 新建成功
 
 async def remove_subscription(uid: str, chat_id: int) -> bool:
     async with AsyncSessionLocal() as session:
