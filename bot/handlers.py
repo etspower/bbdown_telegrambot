@@ -762,6 +762,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             except Exception as e:
                 logger.error(f"Failed to send file: {e}")
                 await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
-                        
+
     finally:
+        # 全部 P 处理完毕后统一清理（每个 P 独立子目录）
         shutil.rmtree(dl_base, ignore_errors=True)
