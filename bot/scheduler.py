@@ -128,13 +128,12 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         downloaded_files = list(dl_dir.glob("*"))
         if downloaded_files:
             target_file = max(downloaded_files, key=lambda p: p.stat().st_size)
-            # 先标记已下载，再上传，避免上传失败导致重复推送
-            await mark_bvid_downloaded(uid, bvid)
             try:
                 await msg.edit_text("Uploading file...")
                 file = FSInputFile(str(target_file))
                 await bot.send_video(chat_id, file, caption=title)
                 await msg.delete()
+                await mark_bvid_downloaded(uid, bvid)
             except Exception as e:
                 await msg.edit_text(f"Upload failed: {e}")
         else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import hashlib
+import httpx
 import logging
 import os
 import re
@@ -8,6 +9,8 @@ import shutil
 import time
 from pathlib import Path
 from typing import Optional
+
+from bilibili_api import get_auth_cookies, HEADERS
 
 from aiogram import Router, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -114,18 +117,19 @@ async def cb_login_menu(callback: types.CallbackQuery):
 @router.callback_query(F.data == "set_login_check")
 async def cb_login_check(callback: types.CallbackQuery):
     await callback.answer("正在检查凭证有效性，请稍候...", show_alert=False)
-    # Check by running BBDown on a mock video, which is very fast and non-blocking
-    result = await run_bbdown_simple(["BV1xx411c7mD", "--only-show-info"], DATA_DIR, timeout=30)
-    
-    if result.timed_out:
-        status = f"❌ **验证超时**（30秒），BBDown 可能卡死。请重启机器人或重新扫码登录。"
-    elif result.error:
-        status = f"❌ **验证时发生系统错误**：{result.error}"
-    elif "尚未登录" in result.output or "需扫码" in result.output or "失效" in result.output or "过期" in result.output:
-        status = "❌ **登录凭证已失效或未登录**，请点击 [发起扫码登录]重新认证。"
-    else:
-        status = "✅ **当前处于已登录状态**，您的认证凭证完全有效！"
-        
+    try:
+        async with httpx.AsyncClient(headers=HEADERS, cookies=get_auth_cookies(), timeout=10.0) as client:
+            resp = await client.get("https://api.bilibili.com/x/web-interface/nav")
+            data = resp.json()
+            is_login = data.get("data", {}).get("isLogin", False)
+        if is_login:
+            uname = data["data"].get("uname", "未知用户")
+            status = f"✅ **当前已登录**，账号：**{uname}**，凭证有效！"
+        else:
+            status = "❌ **未登录或凭证已失效**，请点击 [发起扫码登录] 重新认证。"
+    except Exception as e:
+        status = f"❌ **检查时发生错误**：{e}"
+
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 返回登录菜单", callback_data="set_login_menu"))
     await callback.message.edit_text(f"🔑 **登录状态检查报告**\n\n{status}", reply_markup=builder.as_markup(), parse_mode="Markdown")
@@ -673,84 +677,91 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     elif action == "danmaku": cmd_args.append("--danmaku")
     elif action == "sub": cmd_args.append("--sub-only")
     
-    # 使用 URL hash 作为下载目录标识
+    # 使用 URL hash 作为下载目录标识，每个分 P 使用独立子目录
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
-    dl_dir = Path(DATA_DIR) / "downloads" / dl_id
-    dl_dir.mkdir(parents=True, exist_ok=True)
+    dl_base = Path(DATA_DIR) / "downloads" / dl_id
+    dl_base.mkdir(parents=True, exist_ok=True)
     
     await status_msg.edit_text(f"🚀 已排队 {len(pages)} 个任务。\n当前: P{pages[0]}")
     
-    for i, p in enumerate(pages):
-        current_cmd_args = cmd_args.copy()
-        current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
-        
-        try: 
-            await status_msg.edit_text(f"📥 **拉取数据库 P{p}** ({i+1}/{len(pages)})...\n标题: `{title}`", parse_mode="Markdown")
-        except: pass
-        
-        # 使用统一的 SubprocessExecutor
-        executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
-        
-        last_update_time = time.time()
-        last_percentage = 0.0
-        current_text = ""
-        
-        async def flush_ui(text: str, force: bool = False):
-            nonlocal last_update_time, current_text
-            current_time = time.time()
-            if force or (current_time - last_update_time) >= 3.0:
-                full_text = f"📥 **正在进行任务 P{p}** ({i+1}/{len(pages)})\n{text}"
-                if full_text != current_text:
-                    try:
-                        await status_msg.edit_text(full_text, parse_mode="Markdown")
-                        current_text = full_text
-                        last_update_time = current_time
-                    except Exception: pass
+    try:
+        for i, p in enumerate(pages):
+            # 每个分 P 使用独立目录，避免一个 P 失败影响其他 P
+            dl_dir = dl_base / f"p{p}"
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            
+            current_cmd_args = cmd_args.copy()
+            current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
+            
+            try: 
+                await status_msg.edit_text(f"📥 **拉取数据库 P{p}** ({i+1}/{len(pages)})...\n标题: `{title}`", parse_mode="Markdown")
+            except: pass
+            
+            # 使用统一的 SubprocessExecutor
+            executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
+            
+            last_update_time = time.time()
+            last_percentage = 0.0
+            current_text = ""
+            
+            async def flush_ui(text: str, force: bool = False):
+                nonlocal last_update_time, current_text
+                current_time = time.time()
+                if force or (current_time - last_update_time) >= 3.0:
+                    full_text = f"📥 **正在进行任务 P{p}** ({i+1}/{len(pages)})\n{text}"
+                    if full_text != current_text:
+                        try:
+                            await status_msg.edit_text(full_text, parse_mode="Markdown")
+                            current_text = full_text
+                            last_update_time = current_time
+                        except Exception: pass
 
-        try:
-            async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
-                if abs(progress.percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
-                    bar = create_progress_bar(progress.percentage)
-                    await flush_ui(f"`{bar}`", force=True)
-                    last_percentage = progress.percentage
-                elif progress.percentage == 100.0:
-                    await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+            try:
+                async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
+                    if abs(progress.percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
+                        bar = create_progress_bar(progress.percentage)
+                        await flush_ui(f"`{bar}`", force=True)
+                        last_percentage = progress.percentage
+                    elif progress.percentage == 100.0:
+                        await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+                
+                result = await executor.wait()
+                
+            except Exception as e:
+                logger.error(f"Error during P{p} download: {e}")
+                await executor.kill()
+                await status_msg.answer(f"❌ P{p} 下载出错: {e}")
+                continue
             
-            result = await executor.wait()
-            
-        except Exception as e:
-            logger.error(f"Error during P{p} download: {e}")
-            await executor.kill()
-            await status_msg.answer(f"❌ P{p} 下载出错: {e}")
-            continue
-        
-        if result.timed_out:
-            await status_msg.answer(f"❌ **P{p} 下载超时，已强制终止 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
-            # 不删除 dl_dir，因为可能包含其他分 P 的已下载文件，继续下一个分 P
-            continue
-            
-        if result.return_code != 0:
-            await status_msg.answer(f"❌ P{p} 下载失败, 错误代码 {result.return_code}。")
-            # 不删除 dl_dir，保留其他分 P 的已下载文件
-            continue
+            if result.timed_out:
+                await status_msg.answer(f"❌ **P{p} 下载超时，已强制终止 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
+                # 不删除 dl_dir，因为可能包含其他分 P 的已下载文件，继续下一个分 P
+                continue
+                
+            if result.return_code != 0:
+                await status_msg.answer(f"❌ P{p} 下载失败, 错误代码 {result.return_code}。")
+                # 不删除 dl_dir，保留其他分 P 的已下载文件
+                continue
 
-        await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
-        await asyncio.sleep(1.5)
-        
-        downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
-        if not downloaded_files:
-            await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
-            continue  # 不删目录，保留其他分 P 的文件
+            await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
+            await asyncio.sleep(1.5)
             
-        target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
-        try:
-            file = FSInputFile(str(target_file))
-            file_cap = f"{title} (P{p})"
-            if target_file.suffix.lower() == ".mp4": await status_msg.answer_video(file, caption=file_cap)
-            elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]: await status_msg.answer_audio(file, caption=file_cap)
-            else: await status_msg.answer_document(file, caption=file_cap)
-            await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
-        except Exception as e:
-            logger.error(f"Failed to send file: {e}")
-            await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
-                    
+            downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
+            if not downloaded_files:
+                await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
+                continue  # 不删目录，保留其他分 P 的文件
+                
+            target_file = max(downloaded_files, key=lambda f: f.stat().st_size)
+            try:
+                file = FSInputFile(str(target_file))
+                file_cap = f"{title} (P{p})"
+                if target_file.suffix.lower() == ".mp4": await status_msg.answer_video(file, caption=file_cap)
+                elif target_file.suffix.lower() in [".mp3", ".m4a", ".aac"]: await status_msg.answer_audio(file, caption=file_cap)
+                else: await status_msg.answer_document(file, caption=file_cap)
+                await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
+            except Exception as e:
+                logger.error(f"Failed to send file: {e}")
+                await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
+                        
+    finally:
+        shutil.rmtree(dl_base, ignore_errors=True)
