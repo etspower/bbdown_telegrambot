@@ -1,3 +1,12 @@
+---
+title: BBDown Telegram Bot
+emoji: 🎥
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # BBDown Telegram Bot
 
 在 Telegram 中直接下载 Bilibili 视频、音频、弹幕和字幕，支持多 P 合集、画质选择与 UP 主后台自动订阅推送。
