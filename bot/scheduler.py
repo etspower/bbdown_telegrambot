@@ -139,7 +139,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         await msg.edit_text(
             f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。"
         )
-        retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=True)
+        await retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=True)
         return
 
     if result.return_code == 0:
@@ -168,7 +168,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
             await msg.edit_text("Download succeeded but file not found.")
 
     # 失败路径：增加重试计数
-    retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=False)
+    await retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=False)
 
 
 async def retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout: bool):
