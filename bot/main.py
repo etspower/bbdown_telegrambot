@@ -6,6 +6,8 @@ import shutil
 from io import BytesIO
 from pathlib import Path
 
+from aiohttp import web #hugging face spaces保活
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import BufferedInputFile
