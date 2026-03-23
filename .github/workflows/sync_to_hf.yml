@@ -6,11 +6,20 @@ jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4 # 更新到 v4 以支持最新的 Node.js 环境
         with:
           fetch-depth: 0
           lfs: true
-      - name: Push to hub
+
+      - name: Push to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://etspower:$HF_TOKEN@huggingface.co/spaces/etspower/bbdown_telegram_bot main
+        run: |
+          # 配置临时 Git 身份（防止某些环境报错）
+          git config --global user.email "xing@example.com"
+          git config --global user.name "Xing"
+          
+          # 强制推送代码到 Hugging Face Space
+          # 注意：请确认下面的 etspower 是你的 HF 用户名
+          git push -f https://etspower:$HF_TOKEN@huggingface.co/spaces/etspower/bbdown_telegram_bot main
