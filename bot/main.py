@@ -118,25 +118,30 @@ async def cmd_login(message: types.Message):
                     await message.answer(f"❌ Login Failed: {decoded_line}")
 
         await process.wait()
-        
-    finally:
-        # 在清理临时目录前，先把凭证文件拷贝回主数据目录
+
+        # 登录成功后才复制凭证文件
         credentials_src = os.path.join(login_tmp_dir, "BBDown.data")
         if os.path.exists(credentials_src):
             import shutil
             dest = os.path.join(DATA_DIR, "BBDown.data")
             shutil.copy2(credentials_src, dest)
             logger.info(f"Credentials saved to {dest}")
-        # 清理临时目录
-        _cleanup_login_dir(login_tmp_dir)
-    
-    if process.returncode == 0:
-        if qr_sent:
-            await status_msg.edit_text("Login successful!")
+            if qr_sent:
+                await status_msg.edit_text("Login successful!")
+            else:
+                await status_msg.edit_text("BBDown exited but you may already be logged in.")
         else:
-            await status_msg.edit_text("BBDown exited but no new QR code found. You may already be logged in.")
-    else:
-        await status_msg.edit_text(f"Login failed! BBDown exited with code {process.returncode}.")
+            await status_msg.edit_text(f"Login failed! No credentials file found.")
+
+    except Exception as e:
+        logger.exception("Login process error")
+        await status_msg.edit_text(f"❌ 登录过程发生错误：{e}")
+        _cleanup_login_dir(login_tmp_dir)
+        return
+
+    finally:
+        # 只负责清理临时目录
+        _cleanup_login_dir(login_tmp_dir)
 
 
 def _cleanup_login_dir(path: str):

@@ -83,6 +83,18 @@ async def check_subscriptions(bot: Bot):
             logger.error(f"Error checking sub {sub.uid}: {e}")
 
 
+def _sort_downloaded_files(files):
+    """按文件类型排序：视频 > 音频 > 其他，确保发送顺序可控。"""
+    def _key(f):
+        ext = f.suffix.lower()
+        if ext in VIDEO_EXT:
+            return 0
+        if ext in AUDIO_EXT:
+            return 1
+        return 2
+    return sorted(files, key=_key)
+
+
 async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):
     """自动下载任务 - 使用统一的 SubprocessExecutor"""
     video_url = f"https://www.bilibili.com/video/{bvid}"
@@ -127,32 +139,40 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         await msg.edit_text(
             f"❌ **自动下载超时，已强制终止任务 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。"
         )
-        shutil.rmtree(dl_dir, ignore_errors=True)
+        retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=True)
         return
 
     if result.return_code == 0:
         downloaded_files = [f for f in dl_dir.glob("*") if f.is_file()]
         if downloaded_files:
+            # 按类型排序：视频 → 音频 → 其他
+            downloaded_files = _sort_downloaded_files(downloaded_files)
             try:
                 await msg.edit_text("Uploading file...")
                 for f in downloaded_files:
                     fobj = FSInputFile(str(f))
-                    if f.suffix.lower() in VIDEO_EXT:
+                    ext = f.suffix.lower()
+                    if ext in VIDEO_EXT:
                         await bot.send_video(chat_id, fobj, caption=title)
-                    elif f.suffix.lower() in AUDIO_EXT:
+                    elif ext in AUDIO_EXT:
                         await bot.send_audio(chat_id, fobj, caption=title)
                     else:
                         await bot.send_document(chat_id, fobj, caption=title)
                 await msg.delete()
                 await mark_bvid_downloaded(uid, bvid)
+                shutil.rmtree(dl_dir, ignore_errors=True)
+                return  # 成功路径直接返回，不进入重试计数逻辑
             except Exception as e:
                 await msg.edit_text(f"Upload failed: {e}")
         else:
             await msg.edit_text("Download succeeded but file not found.")
-    else:
-        await msg.edit_text(f"Download failed with exit code: {result.return_code}")
 
-    # 重试计数：失败时增加计数，达到上限后标记为放弃不再推送
+    # 失败路径：增加重试计数
+    retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=False)
+
+
+async def retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout: bool):
+    """统一的重试计数 + 清理逻辑。"""
     retry_count = await increment_retry_count(uid, bvid)
     if retry_count >= MAX_RETRY:
         logger.warning(f"[{bvid}] Auto-download failed {retry_count} times, marking as abandoned.")
@@ -165,6 +185,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
             )
         except Exception:
             pass
-
-    # Cleanup
+    elif is_timeout:
+        await bot.send_message(chat_id, f"⏰ 视频 **{title}** 下载超时，将于下次轮询重试。（{retry_count}/{MAX_RETRY}）")
+    # 清理
     shutil.rmtree(dl_dir, ignore_errors=True)

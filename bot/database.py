@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func
+from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func, update
 from pathlib import Path
 
 from config import DATA_DIR
@@ -138,20 +138,25 @@ async def mark_bvid_downloaded(uid: str, bvid: str):
         await session.commit()
 
 async def increment_retry_count(uid: str, bvid: str) -> int:
-    """对失败视频增加重试计数，返回增加后的值。首次记录时初始化为 1。"""
+    """原子地增加重试计数，返回增加后的值。首次记录时初始化为 1。"""
     async with AsyncSessionLocal() as session:
+        # 原子 UPDATE，避免 read-modify-write 的并发问题
         result = await session.execute(
-            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+            update(DownloadHistory)
+            .where(DownloadHistory.bvid == bvid)
+            .values(retry_count=DownloadHistory.retry_count + 1)
+            .returning(DownloadHistory.retry_count)
         )
-        existing = result.scalar_one_or_none()
-        if existing:
-            existing.retry_count += 1
-            new_count = existing.retry_count
-        else:
+        row = result.first()
+
+        if row is None:
+            # 不存在，插入新记录
             session.add(DownloadHistory(uid=uid, bvid=bvid, retry_count=1))
-            new_count = 1
+            await session.commit()
+            return 1
+
         await session.commit()
-        return new_count
+        return row[0]
 
 # ─────────────────────────── UP Video Cache ───────────────────────────────
 

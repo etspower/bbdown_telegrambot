@@ -19,6 +19,18 @@ BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^
 VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
 AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 
+
+def _sort_downloaded_files(files):
+    """按文件类型排序：视频 > 音频 > 其他，确保发送顺序可控。"""
+    def _key(f):
+        ext = f.suffix.lower()
+        if ext in VIDEO_EXT:
+            return 0
+        if ext in AUDIO_EXT:
+            return 1
+        return 2
+    return sorted(files, key=_key)
+
 from bilibili_api import get_auth_cookies, HEADERS
 
 from aiogram import Router, types, F
@@ -775,8 +787,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
                 continue  # 不删目录，保留其他分 P 的文件
 
-            # 按文件类型分别发送，而非只取最大文件
-            # 这样弹幕(xml/ass)、字幕、音频各自独立发送，不会被视频文件吞掉
+            # 按类型排序后发送：视频 → 音频 → 其他
+            downloaded_files = _sort_downloaded_files(downloaded_files)
+
             try:
                 for f in downloaded_files:
                     ext = f.suffix.lower()
