@@ -1,16 +1,14 @@
 import asyncio
 import logging
-import re
 import os
 import shutil
-from io import BytesIO
+import uuid
 from pathlib import Path
 
 from aiohttp import web #hugging face spaces保活
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import BufferedInputFile
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,7 +47,6 @@ async def cmd_login(message: types.Message):
     status_msg = await message.answer("Initializing BBDown login...")
     
     # 为每次登录创建独立的临时目录，避免多 Admin 并发登录时文件冲突
-    import uuid
     login_tmp_dir = os.path.join(DATA_DIR, f"tmp_login_{message.from_user.id}_{uuid.uuid4().hex[:8]}")
     os.makedirs(login_tmp_dir, exist_ok=True)
     
@@ -124,7 +121,6 @@ async def cmd_login(message: types.Message):
         # 登录成功后才复制凭证文件
         credentials_src = os.path.join(login_tmp_dir, "BBDown.data")
         if os.path.exists(credentials_src):
-            import shutil
             dest = os.path.join(DATA_DIR, "BBDown.data")
             shutil.copy2(credentials_src, dest)
             logger.info(f"Credentials saved to {dest}")
@@ -147,9 +143,8 @@ async def cmd_login(message: types.Message):
 
 
 def _cleanup_login_dir(path: str):
-    """清理登录临时目录"""
+    """Clean up the temporary login directory."""
     try:
-        import shutil
         if os.path.exists(path):
             shutil.rmtree(path)
             logger.info(f"Cleaned up login tmp dir: {path}")
@@ -206,7 +201,9 @@ async def main():
     await bot.set_my_commands(commands)
     
     logger.info("Starting bot...")
-    await start_dummy_server()  # <--- 新增这一行，先启动假服务
+    # Only start the HF Spaces keepalive server when running on Hugging Face
+    if os.getenv("SPACE_ID"):
+        await start_dummy_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -212,8 +212,8 @@ class SubprocessExecutor:
                 else:
                     # Unix: kill the entire process group
                     os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                # Process already exited
+            except (ProcessLookupError, PermissionError, OSError):
+                # Process already exited or pgid inaccessible
                 pass
             try:
                 await self._process.wait()

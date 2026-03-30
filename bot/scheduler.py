@@ -50,17 +50,13 @@ async def check_subscriptions(bot: Bot):
 
     for sub in subs:
         try:
-            # 翻页检查：最多检查前 2 页（共 10 条），遇到已下载的视频则停止
-            # 列表按时间排序，新视频在前，下载过的视频在后面
+            # 翻页检查：最多检查前 max_pages 页
+            # 翻页终止只由 raw_count（API 原始返回条数）决定
+            # 已下载视频只 skip 不中断，避免关键词过滤后交错排列导致漏检
             max_pages = 2
-            new_video_found = True  # 控制是否继续翻页
-            
+
             for page in range(1, max_pages + 1):
-                if not new_video_found:
-                    break
-                
                 # raw_count = API pre-filter count; videos = keyword-filtered
-                # Pagination stops on raw_count == 0, NOT on empty filtered list
                 raw_count, videos = await get_up_videos(sub.uid, pn=page, ps=5, keywords=sub.keyword)
                 if raw_count == 0:
                     break
@@ -69,14 +65,11 @@ async def check_subscriptions(bot: Bot):
                     bvid = video['bvid']
                     title = video['title']
 
-                    # 遇到已下载的视频（列表按时间倒序，旧视频在后）
-                    # 说明已到达旧内容边界，停止翻页
+                    # 已下载/已放弃的视频只跳过，不中断翻页
                     if await is_bvid_downloaded(bvid):
-                        new_video_found = False
-                        break
+                        continue
 
                     logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
-                    # 新视频入库，保持本地缓存与实时数据同步
                     await _upsert_new_video(sub.uid, bvid, title)
                     await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
                     await asyncio.sleep(5)

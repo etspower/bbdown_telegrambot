@@ -138,23 +138,31 @@ async def mark_bvid_downloaded(uid: str, bvid: str):
         await session.commit()
 
 async def increment_retry_count(uid: str, bvid: str) -> int:
-    """Increment retry count, return the new value. Creates the record if it doesn't exist.
+    """Atomically increment retry count, return the new value.
 
-    Uses ORM select+update instead of SQL RETURNING clause for SQLite compatibility.
+    Uses raw SQL ``UPDATE SET retry_count = retry_count + 1`` for true atomic
+    increment (no TOCTOU race between concurrent coroutines). Falls back to
+    INSERT if the record doesn't exist yet. Avoids the ``RETURNING`` clause
+    for broad SQLite compatibility.
     """
     async with AsyncSessionLocal() as session:
+        # Atomic in-place increment (single SQL statement, no read-modify-write gap)
         result = await session.execute(
-            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+            text("UPDATE download_history SET retry_count = retry_count + 1 WHERE bvid = :bvid"),
+            {"bvid": bvid}
         )
-        record = result.scalar_one_or_none()
 
-        if record is None:
+        if result.rowcount == 0:
+            # Record doesn't exist yet — insert with retry_count=1
             session.add(DownloadHistory(uid=uid, bvid=bvid, retry_count=1))
             await session.commit()
             return 1
 
-        record.retry_count += 1
-        new_count = record.retry_count
+        # Read back the updated value
+        row = await session.execute(
+            select(DownloadHistory.retry_count).where(DownloadHistory.bvid == bvid)
+        )
+        new_count = row.scalar_one()
         await session.commit()
         return new_count
 
