@@ -275,3 +275,29 @@ def create_progress_bar(percentage: float, length: int = 15) -> str:
     filled = int(length * percentage / 100)
     empty = length - filled
     return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"
+
+
+class ThrottledMessageUpdater:
+    """Throttled Telegram message updater — deduplicates edits by time and content.
+
+    Usage:
+        updater = ThrottledMessageUpdater(message, interval=3.0)
+        await updater.update("Downloading...", force=True)
+    """
+
+    def __init__(self, message, interval: float = 3.0):
+        self._msg = message
+        self._interval = interval
+        self._last: float = 0.0
+        self._last_text: str = ""
+
+    async def update(self, text: str, *, force: bool = False, parse_mode: str = "Markdown"):
+        now = asyncio.get_running_loop().time()
+        if force or (now - self._last) >= self._interval:
+            if text != self._last_text:
+                try:
+                    await self._msg.edit_text(text, parse_mode=parse_mode)
+                    self._last_text = text
+                    self._last = now
+                except Exception:
+                    pass

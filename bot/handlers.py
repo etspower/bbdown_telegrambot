@@ -15,9 +15,7 @@ BBDOWN_TITLE_PREFIX = "视频标题:"
 BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
 BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]")
 
-# 文件类型常量，用于下载完成后按类型选择发送方式
-VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
-AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
+# 文件类型常量从 config.py 统一导入，避免双重定义漂移
 
 
 def _sort_downloaded_files(files):
@@ -40,7 +38,7 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from config import BBDOWN_PATH, DATA_DIR, is_admin
+from config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT
 from database import (
     add_subscription, remove_subscription, get_user_subscriptions, Subscription,
     get_videos_by_uid, count_videos_by_uid, get_unparsed_videos,
@@ -55,6 +53,7 @@ from subprocess_executor import (
 logger = logging.getLogger(__name__)
 router = Router()
 router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.from_user.id))
+router.callback_query.filter(lambda c: c.from_user is not None and is_admin(c.from_user.id))
 
 URL_PATTERN = re.compile(r"(https?://(www\.)?(bilibili\.com|b23\.tv)/[^\s]+)")
 
@@ -763,8 +762,16 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 result = await executor.wait()
                 
+            except asyncio.CancelledError:
+                await executor.kill()
+                raise  # Let cancellation propagate
+            except (OSError, RuntimeError) as e:
+                logger.error(f"P{p} subprocess error: {e}", exc_info=True)
+                await executor.kill()
+                await status_msg.answer(f"❌ P{p} 下载出错: {e}")
+                continue
             except Exception as e:
-                logger.error(f"Error during P{p} download: {e}")
+                logger.error(f"P{p} unexpected error: {e}", exc_info=True)
                 await executor.kill()
                 await status_msg.answer(f"❌ P{p} 下载出错: {e}")
                 continue

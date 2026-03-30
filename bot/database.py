@@ -1,4 +1,5 @@
 from __future__ import annotations
+import enum
 import logging
 import os
 from datetime import datetime, timezone
@@ -31,12 +32,21 @@ class Subscription(Base):
     keyword: Mapped[str] = mapped_column(String(100), nullable=True)
     chat_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
+class DLStatus(str, enum.Enum):
+    """Download history status to distinguish success from abandoned retries."""
+    PENDING   = "pending"    # Discovered but not yet downloaded
+    DONE      = "done"       # Successfully pushed to Telegram
+    ABANDONED = "abandoned"  # Exceeded retry limit, gave up
+
 class DownloadHistory(Base):
     __tablename__ = "download_history"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(50), nullable=False)
     bvid: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default=DLStatus.PENDING.value, nullable=False
+    )
 
 class UpVideo(Base):
     """Stores all video URLs fetched via BBDown for a given UP master."""
@@ -65,6 +75,24 @@ async def init_db():
         if "up_name" not in existing_cols:
             await conn.execute(text("ALTER TABLE subscriptions ADD COLUMN up_name VARCHAR(100)"))
             logger.info("Database migration: added 'up_name' column to subscriptions.")
+
+        # Migration: add 'status' column to download_history
+        result = await conn.execute(text("PRAGMA table_info(download_history)"))
+        dl_cols = [row[1] for row in result.fetchall()]
+        if "status" in dl_cols:
+            pass  # Already migrated
+        elif len(dl_cols) > 0:  # Table exists but no status column
+            await conn.execute(text(
+                f"ALTER TABLE download_history ADD COLUMN status VARCHAR(20) "
+                f"NOT NULL DEFAULT '{DLStatus.PENDING.value}'"
+            ))
+            # Backfill: records at MAX_RETRY are either DONE or ABANDONED;
+            # we can't tell for old data, so mark them all as DONE
+            await conn.execute(text(
+                f"UPDATE download_history SET status = '{DLStatus.DONE.value}' "
+                f"WHERE retry_count >= {MAX_RETRY}"
+            ))
+            logger.info("Database migration: added 'status' column to download_history.")
 
 # ─────────────────────────── Subscriptions ────────────────────────────────
 
@@ -113,7 +141,7 @@ async def get_user_subscriptions(chat_id: int) -> list[Subscription]:
 MAX_RETRY = 3  # 超过此次数视为放弃，不再重试
 
 async def is_bvid_downloaded(bvid: str) -> bool:
-    """检查视频是否已完成下载（成功或已超过重试上限）。"""
+    """Check if a video has been fully processed (either success or abandoned)."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(DownloadHistory).where(DownloadHistory.bvid == bvid)
@@ -121,11 +149,10 @@ async def is_bvid_downloaded(bvid: str) -> bool:
         record = result.scalar_one_or_none()
         if record is None:
             return False
-        # 重试超过上限视为"已处理"，不再重复推送
-        return record.retry_count >= MAX_RETRY
+        return record.status in (DLStatus.DONE.value, DLStatus.ABANDONED.value)
 
 async def mark_bvid_downloaded(uid: str, bvid: str):
-    """标记视频为成功下载（插入或更新 retry_count=MAX_RETRY）。"""
+    """Mark a video as successfully downloaded and pushed."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(DownloadHistory).where(DownloadHistory.bvid == bvid)
@@ -133,8 +160,28 @@ async def mark_bvid_downloaded(uid: str, bvid: str):
         existing = result.scalar_one_or_none()
         if existing:
             existing.retry_count = MAX_RETRY
+            existing.status = DLStatus.DONE.value
         else:
-            session.add(DownloadHistory(uid=uid, bvid=bvid, retry_count=MAX_RETRY))
+            session.add(DownloadHistory(
+                uid=uid, bvid=bvid, retry_count=MAX_RETRY,
+                status=DLStatus.DONE.value
+            ))
+        await session.commit()
+
+async def mark_bvid_abandoned(uid: str, bvid: str):
+    """Mark a video as abandoned after exceeding retry limit."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.status = DLStatus.ABANDONED.value
+        else:
+            session.add(DownloadHistory(
+                uid=uid, bvid=bvid, retry_count=MAX_RETRY,
+                status=DLStatus.ABANDONED.value
+            ))
         await session.commit()
 
 async def increment_retry_count(uid: str, bvid: str) -> int:

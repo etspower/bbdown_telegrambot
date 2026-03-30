@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter
 from pathlib import Path
 import shutil
 from aiogram.types import FSInputFile
@@ -9,22 +10,19 @@ from database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
     mark_bvid_downloaded,
+    mark_bvid_abandoned,
     increment_retry_count,
     MAX_RETRY,
     upsert_up_video_url,
     update_video_title,
 )
 from bilibili_api import get_up_videos
-from config import BBDOWN_PATH, DATA_DIR
+from config import BBDOWN_PATH, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MAX_PAGES
 from subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
 )
 
 logger = logging.getLogger(__name__)
-
-# 文件类型常量（与 handlers.py 保持同步）
-VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
-AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 
 
 async def _upsert_new_video(uid: str, bvid: str, title: str):
@@ -50,13 +48,8 @@ async def check_subscriptions(bot: Bot):
 
     for sub in subs:
         try:
-            # 翻页检查：最多检查前 max_pages 页
-            # 翻页终止只由 raw_count（API 原始返回条数）决定
-            # 已下载视频只 skip 不中断，避免关键词过滤后交错排列导致漏检
-            max_pages = 2
-
-            for page in range(1, max_pages + 1):
-                # raw_count = API pre-filter count; videos = keyword-filtered
+            # Pagination controlled solely by raw_count from API
+            for page in range(1, SCHEDULER_MAX_PAGES + 1):
                 raw_count, videos = await get_up_videos(sub.uid, pn=page, ps=5, keywords=sub.keyword)
                 if raw_count == 0:
                     break
@@ -65,7 +58,6 @@ async def check_subscriptions(bot: Bot):
                     bvid = video['bvid']
                     title = video['title']
 
-                    # 已下载/已放弃的视频只跳过，不中断翻页
                     if await is_bvid_downloaded(bvid):
                         continue
 
@@ -74,10 +66,13 @@ async def check_subscriptions(bot: Bot):
                     await process_auto_download(bot, sub.chat_id, sub.uid, bvid, title, sub.up_name)
                     await asyncio.sleep(5)
 
+        except TelegramRetryAfter as e:
+            logger.warning(f"Telegram rate limit hit, sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after)
         except Exception as e:
             logger.error(f"Error checking sub {sub.uid}: {e}")
 
-        # P1: throttle between subscriptions to avoid burst requests
+        # Throttle between subscriptions to avoid burst requests
         await asyncio.sleep(2)
 
 
@@ -173,11 +168,11 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
 
 
 async def retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout: bool):
-    """统一的重试计数 + 清理逻辑。"""
+    """Unified retry counting + cleanup logic."""
     retry_count = await increment_retry_count(uid, bvid)
     if retry_count >= MAX_RETRY:
         logger.warning(f"[{bvid}] Auto-download failed {retry_count} times, marking as abandoned.")
-        await mark_bvid_downloaded(uid, bvid)
+        await mark_bvid_abandoned(uid, bvid)
         try:
             await bot.send_message(
                 chat_id,
@@ -188,5 +183,5 @@ async def retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout: 
             pass
     elif is_timeout:
         await bot.send_message(chat_id, f"⏰ 视频 **{title}** 下载超时，将于下次轮询重试。（{retry_count}/{MAX_RETRY}）")
-    # 清理
+    # Cleanup
     shutil.rmtree(dl_dir, ignore_errors=True)
