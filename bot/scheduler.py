@@ -59,8 +59,10 @@ async def check_subscriptions(bot: Bot):
                 if not new_video_found:
                     break
                 
-                videos = await get_up_videos(sub.uid, pn=page, ps=5, keywords=sub.keyword)
-                if not videos:
+                # raw_count = API pre-filter count; videos = keyword-filtered
+                # Pagination stops on raw_count == 0, NOT on empty filtered list
+                raw_count, videos = await get_up_videos(sub.uid, pn=page, ps=5, keywords=sub.keyword)
+                if raw_count == 0:
                     break
 
                 for video in videos:
@@ -81,6 +83,9 @@ async def check_subscriptions(bot: Bot):
 
         except Exception as e:
             logger.error(f"Error checking sub {sub.uid}: {e}")
+
+        # P1: throttle between subscriptions to avoid burst requests
+        await asyncio.sleep(2)
 
 
 def _sort_downloaded_files(files):
@@ -143,7 +148,10 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         return
 
     if result.return_code == 0:
-        downloaded_files = [f for f in dl_dir.glob("*") if f.is_file()]
+        downloaded_files = [
+            f for f in dl_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']
+        ]
         if downloaded_files:
             # 按类型排序：视频 → 音频 → 其他
             downloaded_files = _sort_downloaded_files(downloaded_files)

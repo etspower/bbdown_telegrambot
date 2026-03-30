@@ -186,7 +186,14 @@ async def get_up_info(uid: str) -> dict:
         logger.error(f"Exception fetching UP info {uid}: {e}")
     return None
 
-async def get_up_videos(uid: str, pn: int = 1, ps: int = 10, keywords: str = None) -> list:
+async def get_up_videos(uid: str, pn: int = 1, ps: int = 10, keywords: str = None) -> tuple[int, list]:
+    """获取 UP 主视频列表。
+
+    Returns:
+        (raw_count, filtered_list)
+        - raw_count: API 返回的原始视频数量（过滤前），用于判断是否还有下一页。
+        - filtered_list: 经关键词过滤后的视频列表。
+    """
     try:
         async with httpx.AsyncClient(headers=HEADERS, cookies=get_auth_cookies(), timeout=10.0) as client:
             img_key, sub_key = await get_wbi_keys(client)
@@ -195,6 +202,7 @@ async def get_up_videos(uid: str, pn: int = 1, ps: int = 10, keywords: str = Non
             data = resp.json()
             if data.get("code") == 0:
                 vlist = data["data"]["list"]["vlist"]
+                raw_count = len(vlist)
                 results = []
                 
                 filter_keys = []
@@ -212,9 +220,9 @@ async def get_up_videos(uid: str, pn: int = 1, ps: int = 10, keywords: str = Non
                             "bvid": v.get("bvid"),
                             "title": title
                         })
-                return results
+                return raw_count, results
             else:
                 logger.error(f"Failed to fetch videos for {uid}: {data.get('message')}")
     except Exception as e:
         logger.error(f"Exception fetching videos for {uid}: {e}")
-    return []
+    return 0, []

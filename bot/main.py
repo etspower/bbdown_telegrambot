@@ -171,7 +171,17 @@ async def start_dummy_server():
 # --- 新增的假服务代码结束 ---
 
 async def main():
-    # 启动时清理残留的下载分片，避免磁盘被废弃文件占满
+    # ── Startup config validation ──
+    if not BOT_TOKEN:
+        logger.critical("FATAL: BOT_TOKEN is not set! The bot cannot start. Set BOT_TOKEN in .env or environment.")
+        return
+    if ADMIN_ID == 0:
+        logger.warning(
+            "WARNING: ADMIN_ID is 0 (default). The bot will reject ALL user commands. "
+            "Set ADMIN_ID in .env to your Telegram user ID."
+        )
+
+    # Cleanup stale downloads from previous run
     downloads_dir = Path(DATA_DIR) / "downloads"
     if downloads_dir.exists():
         shutil.rmtree(downloads_dir, ignore_errors=True)

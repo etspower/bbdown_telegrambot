@@ -500,7 +500,7 @@ async def show_up_videos_gui(msg_obj: types.Message, uid: str, up_name: str, pag
     else:
         msg_obj = await msg_obj.answer(loading_text)
         
-    videos = await get_up_videos(uid, pn=page, ps=10)
+    _raw_count, videos = await get_up_videos(uid, pn=page, ps=10)
     
     builder = InlineKeyboardBuilder()
     if not videos:

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import signal
+import sys
 from dataclasses import dataclass
 from typing import Optional, Callable, Awaitable, AsyncGenerator, Tuple, List
 from pathlib import Path
@@ -86,12 +89,24 @@ class SubprocessExecutor:
         self._start_time = asyncio.get_running_loop().time()  # 记录开始时间
         
         try:
-            self._process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=cwd,
-            )
+            # Create subprocess in a new process group / session
+            # so we can kill the entire tree (BBDown + ffmpeg children)
+            if sys.platform == 'win32':
+                self._process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=cwd,
+                    creationflags=0x00000200,  # CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                self._process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=cwd,
+                    start_new_session=True,
+                )
         except Exception as e:
             logger.error(f"Failed to create subprocess: {e}")
             return
@@ -178,8 +193,7 @@ class SubprocessExecutor:
             await asyncio.wait_for(self._process.wait(), timeout=remaining)
         except asyncio.TimeoutError:
             logger.warning(f"Process timeout after {self.timeout}s, killing...")
-            self._process.kill()
-            await self._process.wait()
+            await self.kill()
             self._timed_out = True
         
         return ProcessResult(
@@ -189,10 +203,22 @@ class SubprocessExecutor:
         )
     
     async def kill(self):
-        """强制终止进程"""
+        """Kill the entire process tree (BBDown + child ffmpeg processes)."""
         if self._process and self._process.returncode is None:
-            self._process.kill()
-            await self._process.wait()
+            try:
+                if sys.platform == 'win32':
+                    # Windows: taskkill /T kills the entire process tree
+                    os.system(f'taskkill /F /T /PID {self._process.pid} >nul 2>&1')
+                else:
+                    # Unix: kill the entire process group
+                    os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                # Process already exited
+                pass
+            try:
+                await self._process.wait()
+            except Exception:
+                pass
 
 
 async def run_bbdown(
