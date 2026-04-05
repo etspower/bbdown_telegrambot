@@ -69,10 +69,15 @@ root_logger.addHandler(file_handler)
 logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
 
-# 使用官方 Telegram API（强制，忽略环境变量中的自定义 URL）
-# 如果需要使用本地 Bot API 服务器，请取消下面的注释并配置正确的 URL
-bot = Bot(token=BOT_TOKEN)
-logger.info("Using default Telegram API URL: https://api.telegram.org")
+# 配置 Telegram Bot API URL
+# 默认使用官方 API，如果设置了自定义 URL（如本地 Bot API 服务器）则使用自定义
+if API_URL and API_URL != "https://api.telegram.org":
+    session = AiohttpSession(api=TelegramAPIServer.from_base(API_URL))
+    bot = Bot(token=BOT_TOKEN, session=session)
+    logger.info(f"Using custom Telegram API URL: {API_URL}")
+else:
+    bot = Bot(token=BOT_TOKEN)
+    logger.info("Using default Telegram API URL: https://api.telegram.org")
 dp = Dispatcher()
 dp.include_router(handlers_router)
 
@@ -98,10 +103,32 @@ async def cmd_login(message: types.Message):
     logger.info(f"Attempting to run BBDown with path: '{BBDOWN_PATH}'")
     logger.info(f"Command list: {cmd}")
     logger.info(f"Login tmp dir: {login_tmp_dir}")
+    
+    # 检查 BBDown 是否存在
+    if not os.path.exists(BBDOWN_PATH):
+        # 如果是相对路径或仅文件名，尝试在 PATH 中查找
+        import shutil
+        bbdown_resolved = shutil.which("BBDown") or shutil.which("bbdown")
+        if not bbdown_resolved:
+            await status_msg.edit_text(
+                f"❌ BBDown not found!\n\n"
+                f"Please install BBDown:\n"
+                f"```bash\n"
+                f"mkdir -p ~/bbdown_telegrambot/tools\n"
+                f"cd ~/bbdown_telegrambot/tools\n"
+                f"wget https://github.com/nilaoda/BBDown/releases/latest/download/BBDown\n"
+                f"chmod +x BBDown\n"
+                f"```\n\n"
+                f"Then set in .env:\n"
+                f"BBDOWN_PATH=tools/BBDown\n\n"
+                f"Or use Docker which includes BBDown pre-installed."
+            )
+            _cleanup_login_dir(login_tmp_dir)
+            return
+        BBDOWN_PATH = bbdown_resolved
+        logger.info(f"BBDown resolved from PATH: {BBDOWN_PATH}")
+    
     try:
-        if not os.path.exists(BBDOWN_PATH):
-            logger.error(f"FATAL: The file {BBDOWN_PATH} does not exist at the absolute path.")
-        
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
