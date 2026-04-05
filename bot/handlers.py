@@ -850,7 +850,15 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 continue
                 
             if result.return_code != 0:
-                await status_msg.answer(f"❌ P{p} 下载失败, 错误代码 {result.return_code}。")
+                # 提取错误信息（最后 20 行或 500 字符）
+                error_lines = result.output.strip().split('\n')[-20:] if result.output else []
+                error_detail = '\n'.join(error_lines)[-500:] if error_lines else "(无输出)"
+                logger.error(f"❌ P{p} 下载失败: return_code={result.return_code}\n{error_detail}")
+                await status_msg.answer(
+                    f"❌ **P{p} 下载失败** (错误代码 {result.return_code})\n\n"
+                    f"```\n{error_detail}\n```",
+                    parse_mode="Markdown"
+                )
                 # 不删除 dl_dir，保留其他分 P 的已下载文件
                 continue
 
