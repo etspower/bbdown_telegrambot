@@ -107,6 +107,10 @@ class SubprocessExecutor:
                     cwd=cwd,
                     start_new_session=True,
                 )
+        except FileNotFoundError as e:
+            # 可执行文件不存在
+            logger.error(f"❌ 可执行文件未找到: {cmd[0]} - {e}")
+            raise  # 向上层抛出，让调用方处理
         except Exception as e:
             logger.error(f"Failed to create subprocess: {e}")
             return

@@ -552,9 +552,60 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
     await state.clear()
     
     status_msg = await message.answer(f"🔍 解析视频: `{url}`...", parse_mode="Markdown")
-    info = await get_video_info(url)
+    
+    try:
+        info = await get_video_info(url)
+    except FileNotFoundError as e:
+        # BBDown 路径不存在
+        logger.error(f"BBDown 可执行文件未找到: {e}")
+        await status_msg.edit_text(
+            f"❌ **解析失败：BBDown 未安装或路径错误**\n\n"
+            f"请检查服务器上 BBDown 是否正确安装，环境变量是否配置。\n"
+            f"当前配置路径: `{BBDOWN_PATH}`",
+            parse_mode="Markdown"
+        )
+        return
+    except asyncio.TimeoutError:
+        await status_msg.edit_text(
+            f"❌ **解析超时**\n\n"
+            f"BBDown 执行超过 {DEFAULT_INFO_TIMEOUT} 秒未响应，可能是网络问题或服务器负载过高。",
+            parse_mode="Markdown"
+        )
+        return
+    except Exception as e:
+        logger.error(f"解析视频时发生未知错误: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ 解析时发生未知错误: `{e}`", parse_mode="Markdown")
+        return
+    
     if not info:
-        await status_msg.edit_text("❌ 解析失败，请确认该视频公开可见。")
+        # 获取最近一次 BBDown 执行的错误输出
+        # 由于 get_video_info 返回 None，我们需要从日志中获取错误信息
+        # 更好的方式是让 get_video_info 返回错误信息
+        # 这里我们尝试再次执行一次仅获取输出的命令
+        try:
+            result = await run_bbdown_simple([url, "--only-show-info"], DATA_DIR, timeout=30)
+            error_detail = result.output[:300] if result.output else "无详细错误信息"
+            
+            # 常见错误模式识别
+            if "未登录" in error_detail or "login" in error_detail.lower():
+                error_hint = "🔐 **可能原因：未登录 B站**\n请先发送 /login 进行扫码登录。"
+            elif "地区" in error_detail or "region" in error_detail.lower():
+                error_hint = "🌍 **可能原因：地区限制**\n该视频可能有地区访问限制。"
+            elif "版权" in error_detail or "copyright" in error_detail.lower():
+                error_hint = "🔒 **可能原因：版权限制**\n该视频可能因版权原因不可下载。"
+            elif "不存在" in error_detail or "deleted" in error_detail.lower():
+                error_hint = "🗑️ **可能原因：视频已删除**\n该视频可能已被 UP 主删除。"
+            else:
+                error_hint = f"```\n{error_detail}\n```"
+        except Exception:
+            error_hint = "(无法获取详细错误信息)"
+        
+        await status_msg.edit_text(
+            f"❌ **解析失败**\n\n"
+            f"{error_hint}\n\n"
+            f"💡 如问题持续，请检查 `/settings` → 登录状态，确认凭证有效。",
+            parse_mode="Markdown"
+        )
         return
         
     # 使用 FSMContext 存储会话状态，避免全局字典的竞态条件
@@ -601,9 +652,20 @@ async def handle_bilibili_link(message: types.Message, state: FSMContext):
     await trigger_download_selection(message, state, match.group(1))
 
 async def get_video_info(url: str) -> Optional[dict]:
+    """
+    解析视频信息，返回标题、分P数等。
+    
+    Returns:
+        成功时返回 dict，失败时返回 None
+    """
     result = await run_bbdown_simple([url, "--only-show-info", "--show-all"], DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
+    
     if result.return_code != 0:
-        logger.debug(f"BBDown info failed for {url}: {result.output[:200]}")
+        # 🔴 关键修改：使用 logger.error 记录完整错误，确保日志可见
+        error_snippet = result.output[:500] if result.output else "(无输出)"
+        logger.error(f"❌ BBDown 解析失败 [{url}]: return_code={result.return_code}\n完整输出:\n{error_snippet}")
+        # 将错误信息附加到 result 对象，供调用方使用
+        result.error = error_snippet
         return None
 
     title = "Unknown Title"

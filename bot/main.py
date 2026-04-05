@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import uuid
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from aiohttp import web #hugging face spaces保活
@@ -18,8 +19,41 @@ from handlers import router as handlers_router
 from scheduler import check_subscriptions
 from database import init_db
 
-logging.basicConfig(level=logging.INFO)
+# ── 日志系统初始化 ──────────────────────────────────────────────────────────
+# 确保日志目录存在
+LOG_DIR = Path(DATA_DIR) / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "bot.log"
+
+# 创建格式化器
+formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+# 根日志器配置
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 控制台 Handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
+# 文件 Handler (RotatingFileHandler: 按大小轮转)
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10 * 1024 * 1024,  # 10 MB
+    backupCount=5,               # 保留 5 个备份
+    encoding="utf-8"
+)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
+logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
 
 # Optionally configure Local API server if not default
 session = None
