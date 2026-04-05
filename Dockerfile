@@ -4,12 +4,16 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     wget \
+    unzip \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Download and install BBDown
-RUN wget -q https://github.com/nilaoda/BBDown/releases/latest/download/BBDown -O /usr/local/bin/BBDown \
-    && chmod +x /usr/local/bin/BBDown
+# 2. Download and install BBDown (from zip archive)
+RUN wget -q https://github.com/nilaoda/BBDown/releases/download/1.6.3/BBDown_1.6.3_20240814_linux-x64.zip -O /tmp/bbdown.zip \
+    && unzip /tmp/bbdown.zip -d /tmp/bbdown \
+    && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown \
+    && chmod +x /usr/local/bin/BBDown \
+    && rm -rf /tmp/bbdown.zip /tmp/bbdown
 
 # Verify BBDown installation
 RUN BBDown --version
