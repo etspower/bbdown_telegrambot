@@ -664,14 +664,7 @@ async def get_video_info(url: str) -> Optional[dict]:
     """
     result = await run_bbdown_simple([url, "--only-show-info", "--show-all"], DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
     
-    if result.return_code != 0:
-        # 🔴 关键修改：使用 logger.error 记录完整错误，确保日志可见
-        error_snippet = result.output[:500] if result.output else "(无输出)"
-        logger.error(f"❌ BBDown 解析失败 [{url}]: return_code={result.return_code}\n完整输出:\n{error_snippet}")
-        # 将错误信息附加到 result 对象，供调用方使用
-        result.error = error_snippet
-        return None
-
+    # 先尝试解析输出，即使 return_code != 0 也可能包含有效信息
     title = "Unknown Title"
     total_pages = 1
     parts = []
@@ -686,7 +679,16 @@ async def get_video_info(url: str) -> Optional[dict]:
         if part_match:
             parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
 
-    return {"title": title, "total_pages": total_pages, "parts": parts}
+    # 如果成功解析到标题，认为解析成功
+    if title != "Unknown Title":
+        return {"title": title, "total_pages": total_pages, "parts": parts}
+    
+    # 只有在没有解析到任何有用信息时才报错
+    if result.return_code != 0:
+        error_snippet = result.output[:500] if result.output else "(无输出)"
+        logger.error(f"❌ BBDown 解析失败 [{url}]: return_code={result.return_code}\n完整输出:\n{error_snippet}")
+        result.error = error_snippet
+        return None
 
 # ----------------------------
 # 4. Old Flow Handlers (Selections)
