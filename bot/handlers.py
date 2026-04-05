@@ -848,26 +848,29 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 await status_msg.answer(f"❌ **P{p} 下载超时，已强制终止 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。", parse_mode="Markdown")
                 # 不删除 dl_dir，因为可能包含其他分 P 的已下载文件，继续下一个分 P
                 continue
-                
+            
+            # 记录非零返回码（但可能仍有成功下载的文件）
             if result.return_code != 0:
-                # 提取错误信息（最后 20 行或 500 字符）
-                error_lines = result.output.strip().split('\n')[-20:] if result.output else []
-                error_detail = '\n'.join(error_lines)[-500:] if error_lines else "(无输出)"
-                logger.error(f"❌ P{p} 下载失败: return_code={result.return_code}\n{error_detail}")
-                await status_msg.answer(
-                    f"❌ **P{p} 下载失败** (错误代码 {result.return_code})\n\n"
-                    f"```\n{error_detail}\n```",
-                    parse_mode="Markdown"
-                )
-                # 不删除 dl_dir，保留其他分 P 的已下载文件
-                continue
+                logger.warning(f"⚠️ P{p} BBDown 返回非零退出码 {result.return_code}，但检查是否有成功下载的文件...")
 
             await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
             await asyncio.sleep(1.5)
             
             downloaded_files = [f for f in dl_dir.rglob("*") if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']]
+            
             if not downloaded_files:
-                await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
+                # 只有在没有文件且返回码非零时才报错
+                if result.return_code != 0:
+                    error_lines = result.output.strip().split('\n')[-20:] if result.output else []
+                    error_detail = '\n'.join(error_lines)[-500:] if error_lines else "(无输出)"
+                    logger.error(f"❌ P{p} 下载失败: return_code={result.return_code}\n{error_detail}")
+                    await status_msg.answer(
+                        f"❌ **P{p} 下载失败** (错误代码 {result.return_code})\n\n"
+                        f"```\n{error_detail}\n```",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await status_msg.answer(f"❌ 查无打包文件。可能 P{p} 已受版权封存导致无文件导出。")
                 continue  # 不删目录，保留其他分 P 的文件
 
             # 按类型排序后发送：视频 → 音频 → 其他
