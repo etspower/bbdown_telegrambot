@@ -10,6 +10,27 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from bot.bilibili_api import get_auth_cookies, HEADERS
+
+from aiogram import Router, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+
+from bot.config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT
+from bot.database import (
+    add_subscription, remove_subscription, get_user_subscriptions, Subscription,
+    get_videos_by_uid, count_videos_by_uid, get_unparsed_videos,
+)
+from bot.bilibili_api import get_up_info, get_up_videos
+from bot.bbdown_fetcher import fetch_all_video_urls, parse_pending_videos
+from bot.subprocess_executor import (
+    SubprocessExecutor, run_bbdown, run_bbdown_simple,
+    DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
+)
+
 # BBDown 输出解析常量
 BBDOWN_TITLE_PREFIX = "视频标题:"
 BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
@@ -28,27 +49,6 @@ def _sort_downloaded_files(files):
             return 1
         return 2
     return sorted(files, key=_key)
-
-from bilibili_api import get_auth_cookies, HEADERS
-
-from aiogram import Router, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-
-from config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT
-from database import (
-    add_subscription, remove_subscription, get_user_subscriptions, Subscription,
-    get_videos_by_uid, count_videos_by_uid, get_unparsed_videos,
-)
-from bilibili_api import get_up_info, get_up_videos
-from bbdown_fetcher import fetch_all_video_urls, parse_pending_videos
-from subprocess_executor import (
-    SubprocessExecutor, run_bbdown, run_bbdown_simple,
-    DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
-)
 
 logger = logging.getLogger(__name__)
 router = Router()

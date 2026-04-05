@@ -21,10 +21,10 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import BOT_TOKEN, ADMIN_ID, BBDOWN_PATH, DATA_DIR, API_URL, is_admin
-from handlers import router as handlers_router
-from scheduler import check_subscriptions
-from database import init_db
+from bot.config import BOT_TOKEN, ADMIN_ID, BBDOWN_PATH, DATA_DIR, API_URL, is_admin
+from bot.handlers import router as handlers_router
+from bot.scheduler import check_subscriptions
+from bot.database import init_db
 
 # ── 日志系统初始化 ──────────────────────────────────────────────────────────
 # 确保日志目录存在

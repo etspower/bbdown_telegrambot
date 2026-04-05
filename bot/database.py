@@ -8,7 +8,7 @@ from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func
 from pathlib import Path
 
-from config import DATA_DIR
+from bot.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 

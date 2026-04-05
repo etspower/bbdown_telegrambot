@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 from aiogram.types import FSInputFile
 
-from database import (
+from bot.database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
     mark_bvid_downloaded,
@@ -16,9 +16,9 @@ from database import (
     upsert_up_video_url,
     update_video_title,
 )
-from bilibili_api import get_up_videos
-from config import BBDOWN_PATH, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MAX_PAGES
-from subprocess_executor import (
+from bot.bilibili_api import get_up_videos
+from bot.config import BBDOWN_PATH, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MAX_PAGES
+from bot.subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
 )
 

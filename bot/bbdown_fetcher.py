@@ -12,13 +12,13 @@ import logging
 import re
 from typing import Callable, Awaitable, Optional
 
-from config import DATA_DIR
-from database import (
+from bot.config import DATA_DIR
+from bot.database import (
     upsert_up_video_url,
     get_unparsed_videos,
     update_video_title,
 )
-from subprocess_executor import run_bbdown, run_bbdown_simple, DEFAULT_SCAN_TIMEOUT, DEFAULT_INFO_TIMEOUT
+from bot.subprocess_executor import run_bbdown, run_bbdown_simple, DEFAULT_SCAN_TIMEOUT, DEFAULT_INFO_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
