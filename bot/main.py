@@ -241,11 +241,7 @@ async def main():
     logger.info("Initializing database...")
     await init_db()
     
-    logger.info("Starting scheduler...")
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_subscriptions, 'interval', minutes=30, args=[bot])
-    scheduler.start()
-    
+    # ✅ 先设置 bot commands（在 scheduler 启动之前）
     logger.info("Setting bot commands menu...")
     from aiogram.types import BotCommand
     commands = [
@@ -255,6 +251,12 @@ async def main():
         BotCommand(command="help", description="📖 查看使用帮助与说明")
     ]
     await bot.set_my_commands(commands)
+    
+    # ✅ 然后再启动 scheduler
+    logger.info("Starting scheduler...")
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(check_subscriptions, 'interval', minutes=30, args=[bot])
+    scheduler.start()
     
     logger.info("Starting bot...")
     # Only start the HF Spaces keepalive server when running on Hugging Face
