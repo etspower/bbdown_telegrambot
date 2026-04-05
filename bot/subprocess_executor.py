@@ -246,7 +246,7 @@ async def run_bbdown(
         ProcessResult 对象
     """
     if bbdown_path is None:
-        from config import BBDOWN_PATH
+        from bot.config import BBDOWN_PATH
         bbdown_path = BBDOWN_PATH
     
     cmd = [bbdown_path] + args

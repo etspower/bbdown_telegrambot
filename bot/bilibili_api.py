@@ -9,7 +9,7 @@ from functools import reduce
 from hashlib import md5
 from typing import Tuple
 
-from config import DATA_DIR
+from bot.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
