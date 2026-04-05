@@ -70,13 +70,17 @@ logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
 
 # Optionally configure Local API server if not default
-session = None
 if API_URL and API_URL != "https://api.telegram.org":
+    # 使用自定义 API URL（如本地 Bot API 服务器）
     session = AiohttpSession(
         api=TelegramAPIServer.from_base(API_URL)
     )
-
-bot = Bot(token=BOT_TOKEN, session=session)
+    bot = Bot(token=BOT_TOKEN, session=session)
+    logger.info(f"Using custom Telegram API URL: {API_URL}")
+else:
+    # 使用默认 API，让 aiogram 自动管理 session
+    bot = Bot(token=BOT_TOKEN)
+    logger.info("Using default Telegram API URL")
 dp = Dispatcher()
 dp.include_router(handlers_router)
 
