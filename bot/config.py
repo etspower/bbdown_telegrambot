@@ -2,22 +2,37 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# 调试：检查环境变量在 load_dotenv 之前的值
+_pre_token = os.getenv("BOT_TOKEN", "")
+print(f"🔍 DEBUG: Before load_dotenv, BOT_TOKEN from env: {f'{_pre_token[:10]}...{_pre_token[-4:]}' if _pre_token and len(_pre_token) > 14 else '(empty or too short)'}")
+
 # 尝试从多个位置加载 .env 文件
 # 1. 当前工作目录
 # 2. bot 模块的父目录（项目根目录）
 _env_loaded = load_dotenv()
+print(f"🔍 DEBUG: load_dotenv() from cwd returned: {_env_loaded}")
+
 if not _env_loaded:
     # 尝试从项目根目录加载
     _project_root = Path(__file__).parent.parent
     _env_path = _project_root / ".env"
-    _env_loaded = load_dotenv(_env_path)
+    print(f"🔍 DEBUG: Trying to load from: {_env_path}")
+    _env_loaded = load_dotenv(_env_path, override=True)
+    print(f"🔍 DEBUG: load_dotenv(_env_path) returned: {_env_loaded}")
+
+# 强制重新加载，覆盖已存在的环境变量
+_project_root = Path(__file__).parent.parent
+_env_path = _project_root / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path, override=True)
+    print(f"🔍 DEBUG: Force reloaded .env with override=True")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip('"').strip("'")
 
 # 调试：打印 token 前后缀（不打印完整 token）
 if BOT_TOKEN:
     _token_preview = f"{BOT_TOKEN[:10]}...{BOT_TOKEN[-4:]}" if len(BOT_TOKEN) > 14 else "(too short)"
-    print(f"🔍 DEBUG: BOT_TOKEN loaded: {_token_preview}")
+    print(f"🔍 DEBUG: BOT_TOKEN after all loading: {_token_preview}")
 else:
     print("⚠️ DEBUG: BOT_TOKEN is empty!")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip('"').strip("'"))
