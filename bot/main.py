@@ -6,7 +6,14 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from aiohttp import web #hugging face spaces保活
+# aiohttp 仅用于 Hugging Face Spaces 保活，作为可选依赖
+# 如果未安装，HF Spaces 功能将被禁用，但不影响核心机器人运行
+try:
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    web = None
+    AIOHTTP_AVAILABLE = False
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
@@ -190,6 +197,14 @@ async def health_check(request):
     return web.Response(text="BBDown Bot is running successfully on Hugging Face!")
 
 async def start_dummy_server():
+    """启动一个简单的 HTTP 服务器用于 Hugging Face Spaces 保活。
+    
+    如果 aiohttp 未安装，此函数将不会被调用。
+    """
+    if not AIOHTTP_AVAILABLE:
+        logger.warning("aiohttp 未安装，跳过 Hugging Face Spaces 保活服务器启动。")
+        return
+    
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
@@ -236,7 +251,8 @@ async def main():
     
     logger.info("Starting bot...")
     # Only start the HF Spaces keepalive server when running on Hugging Face
-    if os.getenv("SPACE_ID"):
+    # AND aiohttp is available
+    if os.getenv("SPACE_ID") and AIOHTTP_AVAILABLE:
         await start_dummy_server()
     await dp.start_polling(bot)
 

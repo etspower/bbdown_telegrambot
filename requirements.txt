@@ -1,7 +1,12 @@
+# Core dependencies (required)
 aiogram>=3.4.0
-aiohttp>=3.9.0
 python-dotenv>=1.0.1
 APScheduler>=3.10.4
 SQLAlchemy>=2.0.27
 aiosqlite>=0.20.0
 httpx>=0.27.0
+
+# Optional dependencies
+# aiohttp is only needed for Hugging Face Spaces keepalive server
+# The bot will work without it if you're not deploying to HF Spaces
+aiohttp>=3.9.0  # optional: only required for HF Spaces deployment

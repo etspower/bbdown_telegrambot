@@ -585,20 +585,24 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
         try:
             result = await run_bbdown_simple([url, "--only-show-info"], DATA_DIR, timeout=30)
             error_detail = result.output[:300] if result.output else "无详细错误信息"
-            
-            # 常见错误模式识别
-            if "未登录" in error_detail or "login" in error_detail.lower():
-                error_hint = "🔐 **可能原因：未登录 B站**\n请先发送 /login 进行扫码登录。"
-            elif "地区" in error_detail or "region" in error_detail.lower():
-                error_hint = "🌍 **可能原因：地区限制**\n该视频可能有地区访问限制。"
-            elif "版权" in error_detail or "copyright" in error_detail.lower():
-                error_hint = "🔒 **可能原因：版权限制**\n该视频可能因版权原因不可下载。"
-            elif "不存在" in error_detail or "deleted" in error_detail.lower():
-                error_hint = "🗑️ **可能原因：视频已删除**\n该视频可能已被 UP 主删除。"
-            else:
-                error_hint = f"```\n{error_detail}\n```"
+        except FileNotFoundError:
+            error_detail = f"BBDown 可执行文件未找到: {BBDOWN_PATH}"
         except Exception:
-            error_hint = "(无法获取详细错误信息)"
+            error_detail = "(无法获取详细错误信息)"
+        
+        # 常见错误模式识别
+        if "未登录" in error_detail or "login" in error_detail.lower():
+            error_hint = "🔐 **可能原因：未登录 B站**\n请先发送 /login 进行扫码登录。"
+        elif "地区" in error_detail or "region" in error_detail.lower():
+            error_hint = "🌍 **可能原因：地区限制**\n该视频可能有地区访问限制。"
+        elif "版权" in error_detail or "copyright" in error_detail.lower():
+            error_hint = "🔒 **可能原因：版权限制**\n该视频可能因版权原因不可下载。"
+        elif "不存在" in error_detail or "deleted" in error_detail.lower():
+            error_hint = "🗑️ **可能原因：视频已删除**\n该视频可能已被 UP 主删除。"
+        elif "未找到" in error_detail or "not found" in error_detail.lower():
+            error_hint = f"❌ **BBDown 未安装**\n路径: `{BBDOWN_PATH}`"
+        else:
+            error_hint = f"```\n{error_detail}\n```"
         
         await status_msg.edit_text(
             f"❌ **解析失败**\n\n"
