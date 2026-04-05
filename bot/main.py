@@ -263,7 +263,13 @@ async def main():
     # AND aiohttp is available
     if os.getenv("SPACE_ID") and AIOHTTP_AVAILABLE:
         await start_dummy_server()
-    await dp.start_polling(bot)
+    
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # 确保正确关闭 bot session，避免资源泄漏
+        await bot.session.close()
+        logger.info("Bot session closed.")
 
 if __name__ == "__main__":
     asyncio.run(main())
