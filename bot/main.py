@@ -29,7 +29,14 @@ from database import init_db
 # ── 日志系统初始化 ──────────────────────────────────────────────────────────
 # 确保日志目录存在
 LOG_DIR = Path(DATA_DIR) / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError as e:
+    print(f"❌ Error: Cannot create log directory '{LOG_DIR}': {e}")
+    print(f"   Please ensure DATA_DIR '{DATA_DIR}' is writable.")
+    print(f"   You can set DATA_DIR in .env to a different location.")
+    raise
+
 LOG_FILE = LOG_DIR / "bot.log"
 
 # 创建格式化器
