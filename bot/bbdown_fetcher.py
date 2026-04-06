@@ -19,6 +19,7 @@ from bot.database import (
     update_video_title,
 )
 from bot.subprocess_executor import run_bbdown, run_bbdown_simple, DEFAULT_SCAN_TIMEOUT, DEFAULT_INFO_TIMEOUT
+from bot.utils import extract_bvid
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,6 @@ BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^
 _VIDEO_URL_RE = re.compile(
     r"(https?://(?:www\.)?bilibili\.com/video/(?:av\d+|BV[\w]+))"
 )
-# Extracts BV/av id from a URL
-_BVID_RE = re.compile(r"/video/((?:BV[\w]+|av\d+))")
-
-
-def _extract_bvid(url: str) -> Optional[str]:
-    m = _BVID_RE.search(url)
-    return m.group(1) if m else None
 
 
 async def fetch_all_video_urls(
@@ -76,7 +70,7 @@ async def fetch_all_video_urls(
 
     new_count = 0
     for url in unique_urls:
-        bvid = _extract_bvid(url)
+        bvid = extract_bvid(url)
         if bvid:
             inserted = await upsert_up_video_url(uid, bvid, url)
             if inserted:

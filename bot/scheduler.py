@@ -23,6 +23,7 @@ from bot.config import BBDOWN_PATH, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MA
 from bot.subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
 )
+from bot.utils import sort_downloaded_files
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,7 @@ async def check_subscriptions(bot: Bot):
 
 def _sort_downloaded_files(files):
     """按文件类型排序：视频 > 音频 > 其他，确保发送顺序可控。"""
-    def _key(f):
-        ext = f.suffix.lower()
-        if ext in VIDEO_EXT:
-            return 0
-        if ext in AUDIO_EXT:
-            return 1
-        return 2
-    return sorted(files, key=_key)
+    return sort_downloaded_files(files)
 
 
 async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, title: str, up_name: str = None):

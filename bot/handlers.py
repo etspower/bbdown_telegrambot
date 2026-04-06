@@ -30,76 +30,12 @@ from bot.subprocess_executor import (
     SubprocessExecutor, run_bbdown, run_bbdown_simple,
     DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
 )
+from bot.utils import sort_downloaded_files, parse_pages, extract_bvid
 
 # BBDown 输出解析常量
 BBDOWN_TITLE_PREFIX = "视频标题:"
 BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
 BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]")
-
-# 文件类型常量从 config.py 统一导入，避免双重定义漂移
-
-
-def _sort_downloaded_files(files):
-    """按文件类型排序：视频 > 音频 > 其他，确保发送顺序可控。"""
-    def _key(f):
-        ext = f.suffix.lower()
-        if ext in VIDEO_EXT:
-            return 0
-        if ext in AUDIO_EXT:
-            return 1
-        return 2
-    return sorted(files, key=_key)
-
-
-def _parse_pages(text: str, total_pages: int) -> list[int]:
-    """
-    解析用户输入的分P范围。
-    
-    支持格式：
-    - "1-3,5,7" → [1, 2, 3, 5, 7]
-    - "1,3,5" → [1, 3, 5]
-    - "1-5" → [1, 2, 3, 4, 5]
-    
-    Args:
-        text: 用户输入的字符串
-        total_pages: 视频总P数（用于边界限制）
-    
-    Returns:
-        排序后的页码列表
-    
-    Raises:
-        ValueError: 解析失败时抛出
-    """
-    text = text.replace(" ", "").replace("，", ",")
-    pages = set()
-    
-    if not text:
-        raise ValueError("Empty input")
-    
-    for part in text.split(","):
-        if not part:
-            continue
-        if "-" in part:
-            try:
-                start, end = map(int, part.split("-", 1))
-                start = max(1, start)
-                end = min(total_pages, end)
-                if start <= end:
-                    pages.update(range(start, end + 1))
-            except ValueError:
-                raise ValueError(f"Invalid range: {part}")
-        else:
-            try:
-                p = int(part)
-                if 1 <= p <= total_pages:
-                    pages.add(p)
-            except ValueError:
-                raise ValueError(f"Invalid page number: {part}")
-    
-    if not pages:
-        raise ValueError("No valid pages found")
-    
-    return sorted(pages)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -797,7 +733,7 @@ async def process_custom_pages(message: types.Message, state: FSMContext):
     total_pages = data.get("total_pages", 1)
     
     try:
-        pages = _parse_pages(text, total_pages)
+        pages = parse_pages(text, total_pages)
     except ValueError as e:
         return await message.answer(
             f"❌ 格式错误：{e}\n\n"
@@ -918,7 +854,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 continue  # 不删目录，保留其他分 P 的文件
 
             # 按类型排序后发送：视频 → 音频 → 其他
-            downloaded_files = _sort_downloaded_files(downloaded_files)
+            downloaded_files = sort_downloaded_files(downloaded_files)
 
             try:
                 for f in downloaded_files:
