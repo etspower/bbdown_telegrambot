@@ -95,19 +95,22 @@ async def cmd_login(message: types.Message):
 
     status_msg = await message.answer("Initializing BBDown login...")
     
+    # 使用 config 模块中的 BBDOWN_PATH，支持动态更新
+    import bot.config as config
+    bbdown_path = config.BBDOWN_PATH
+    
     # 为每次登录创建独立的临时目录，避免多 Admin 并发登录时文件冲突
     login_tmp_dir = os.path.join(DATA_DIR, f"tmp_login_{message.from_user.id}_{uuid.uuid4().hex[:8]}")
     os.makedirs(login_tmp_dir, exist_ok=True)
     
-    cmd = [BBDOWN_PATH, "login"]
-    logger.info(f"Attempting to run BBDown with path: '{BBDOWN_PATH}'")
+    cmd = [bbdown_path, "login"]
+    logger.info(f"Attempting to run BBDown with path: '{bbdown_path}'")
     logger.info(f"Command list: {cmd}")
     logger.info(f"Login tmp dir: {login_tmp_dir}")
     
     # 检查 BBDown 是否存在
-    if not os.path.exists(BBDOWN_PATH):
+    if not os.path.exists(bbdown_path):
         # 如果是相对路径或仅文件名，尝试在 PATH 中查找
-        import shutil
         bbdown_resolved = shutil.which("BBDown") or shutil.which("bbdown")
         if not bbdown_resolved:
             await status_msg.edit_text(
@@ -125,8 +128,9 @@ async def cmd_login(message: types.Message):
             )
             _cleanup_login_dir(login_tmp_dir)
             return
-        BBDOWN_PATH = bbdown_resolved
-        logger.info(f"BBDown resolved from PATH: {BBDOWN_PATH}")
+        bbdown_path = bbdown_resolved
+        config.BBDOWN_PATH = bbdown_resolved  # 更新配置
+        logger.info(f"BBDown resolved from PATH: {bbdown_path}")
     
     try:
         process = await asyncio.create_subprocess_exec(
@@ -145,47 +149,59 @@ async def cmd_login(message: types.Message):
     qr_sent = False
     
     try:
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            
-            try:
-                decoded_line = line.decode('utf-8').strip()
-            except UnicodeDecodeError:
-                decoded_line = line.decode('gbk', errors='ignore').strip()
+        # 给登录过程添加 180 秒超时
+        async def read_output():
+            nonlocal qr_sent
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
                 
-            logger.info(f"[BBDown] {decoded_line}")
-            
-            if not qr_sent and "qrcode.png" in decoded_line:
-                await asyncio.sleep(1)
-                if os.path.exists(qr_file_path):
-                    try:
-                        from aiogram.types import FSInputFile
-                        photo = FSInputFile(qr_file_path)
-                        await message.answer_photo(
-                            photo, 
-                            caption="Please scan this QR code with the Bilibili App (TV login)."
-                        )
-                        await status_msg.edit_text("Waiting for scan confirmation...")
-                        qr_sent = True
-                        logger.info("QR code photo sent successfully to Telegram.")
-                    except Exception as ex:
-                        logger.error(f"EXCEPTION in answer_photo: {ex}", exc_info=True)
-                        await status_msg.edit_text(f"Error sending QR photo: {ex}")
-                else:
-                    logger.warning(f"Saw qrcode.png in output, but file does not exist at {qr_file_path}.")
+                try:
+                    decoded_line = line.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    decoded_line = line.decode('gbk', errors='ignore').strip()
                     
-            if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
-                try:
-                    await message.answer(f"✅ **Login Success!** Credentials saved.", parse_mode="Markdown")
-                except:
-                    await message.answer(f"✅ Login Success! Credentials saved.")
-            elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
-                try:
-                    await message.answer(f"❌ **Login Failed/Expired.** Please try `/login` again.", parse_mode="Markdown")
-                except:
-                    await message.answer(f"❌ Login Failed: {decoded_line}")
+                logger.info(f"[BBDown] {decoded_line}")
+                
+                if not qr_sent and "qrcode.png" in decoded_line:
+                    await asyncio.sleep(1)
+                    if os.path.exists(qr_file_path):
+                        try:
+                            from aiogram.types import FSInputFile
+                            photo = FSInputFile(qr_file_path)
+                            await message.answer_photo(
+                                photo, 
+                                caption="Please scan this QR code with the Bilibili App (TV login)."
+                            )
+                            await status_msg.edit_text("Waiting for scan confirmation...")
+                            qr_sent = True
+                            logger.info("QR code photo sent successfully to Telegram.")
+                        except Exception as ex:
+                            logger.error(f"EXCEPTION in answer_photo: {ex}", exc_info=True)
+                            await status_msg.edit_text(f"Error sending QR photo: {ex}")
+                    else:
+                        logger.warning(f"Saw qrcode.png in output, but file does not exist at {qr_file_path}.")
+                        
+                if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
+                    try:
+                        await message.answer(f"✅ **Login Success!** Credentials saved.", parse_mode="Markdown")
+                    except:
+                        await message.answer(f"✅ Login Success! Credentials saved.")
+                elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
+                    try:
+                        await message.answer(f"❌ **Login Failed/Expired.** Please try `/login` again.", parse_mode="Markdown")
+                    except:
+                        await message.answer(f"❌ Login Failed: {decoded_line}")
+
+        # 等待输出读取或超时
+        try:
+            await asyncio.wait_for(read_output(), timeout=180)
+        except asyncio.TimeoutError:
+            process.kill()
+            await status_msg.edit_text("❌ 登录超时（3分钟），请重新发送 /login")
+            _cleanup_login_dir(login_tmp_dir)
+            return
 
         await process.wait()
 

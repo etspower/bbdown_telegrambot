@@ -5,6 +5,7 @@ import urllib.parse
 import os
 import re
 import uuid
+import asyncio
 from functools import reduce
 from hashlib import md5
 from typing import Tuple
@@ -38,6 +39,7 @@ _wbi_cache: dict = {
     "fetched_at": 0.0,
 }
 _WBI_CACHE_TTL = 7200  # 2 小时（秒）
+_wbi_lock = asyncio.Lock()
 
 # --- BBDown.data Cookie 内存缓存 ---
 # BBDown.data 文件在登录后才会变化，启动时加载一次到内存
@@ -46,6 +48,8 @@ _cookie_cache: dict = {
     "cookies": None,       # 缓存的 cookies dict
     "file_mtime": 0.0,     # 上次读取时的文件修改时间，用于检测文件变化
 }
+_cookie_lock = asyncio.Lock()
+
 # BBDown 强制需要 buvid3，使用持久化的 UUID 以绕过 B 站风控的基础校验
 _buvid3_cache: str | None = None
 _BUVID3_FILE = os.path.join(DATA_DIR, ".buvid3")  # 写入持久化数据目录
@@ -105,29 +109,32 @@ def _load_cookies_from_disk() -> dict:
     return cookies
 
 
-def get_auth_cookies() -> dict:
+async def get_auth_cookies() -> dict:
     """获取认证 cookies，优先从内存缓存读取。
     
     仅当 BBDown.data 文件的 mtime 发生变化时（即用户重新登录后）才重新读取磁盘，
     其余情况直接返回内存缓存，不阻塞事件循环。
+    使用锁防止并发刷新。
     """
     global _cookie_cache
-    try:
-        data_file = os.path.join(DATA_DIR, "BBDown.data")
-        current_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0.0
-    except Exception:
-        current_mtime = 0.0
+    
+    async with _cookie_lock:
+        try:
+            data_file = os.path.join(DATA_DIR, "BBDown.data")
+            current_mtime = os.path.getmtime(data_file) if os.path.exists(data_file) else 0.0
+        except Exception:
+            current_mtime = 0.0
 
-    # 缓存有效（文件未变化）则直接返回
-    if _cookie_cache["cookies"] is not None and current_mtime == _cookie_cache["file_mtime"]:
-        return _cookie_cache["cookies"]
+        # 缓存有效（文件未变化）则直接返回
+        if _cookie_cache["cookies"] is not None and current_mtime == _cookie_cache["file_mtime"]:
+            return _cookie_cache["cookies"]
 
-    # 文件变化或首次加载，重新读取
-    logger.info("BBDown.data changed or first load, refreshing cookie cache...")
-    cookies = _load_cookies_from_disk()
-    _cookie_cache["cookies"] = cookies
-    _cookie_cache["file_mtime"] = current_mtime
-    return cookies
+        # 文件变化或首次加载，重新读取
+        logger.info("BBDown.data changed or first load, refreshing cookie cache...")
+        cookies = _load_cookies_from_disk()
+        _cookie_cache["cookies"] = cookies
+        _cookie_cache["file_mtime"] = current_mtime
+        return cookies
 
 mixinKeyEncTab = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -154,25 +161,10 @@ def encWbi(params: dict, img_key: str, sub_key: str):
     params['w_rid'] = wbi_sign
     return params
 
-async def get_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
-    """获取 WBI 签名所需的 img_key 和 sub_key，带内存缓存（TTL 2 小时）。
-    
-    B 站 WBI key 每天才轮换一次，高频调用 /nav 接口极易触发 412/403 风控。
-    缓存命中时直接返回，不发起任何网络请求。
-    """
+async def _refresh_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
+    """内部函数：实际刷新 WBI keys（无锁，调用者需自行加锁）。"""
     global _wbi_cache
-    now = time.time()
     
-    # 缓存有效则直接返回，不请求网络
-    if (
-        _wbi_cache["img_key"]
-        and _wbi_cache["sub_key"]
-        and (now - _wbi_cache["fetched_at"]) < _WBI_CACHE_TTL
-    ):
-        logger.debug("WBI keys cache hit, skipping /nav request")
-        return _wbi_cache["img_key"], _wbi_cache["sub_key"]
-    
-    # 缓存过期或首次请求，重新拉取
     logger.info("WBI keys cache miss, fetching from /nav ...")
     resp = await client.get('https://api.bilibili.com/x/web-interface/nav')
     resp.raise_for_status()
@@ -185,10 +177,35 @@ async def get_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
     # 写入缓存
     _wbi_cache["img_key"] = img_key
     _wbi_cache["sub_key"] = sub_key
-    _wbi_cache["fetched_at"] = now
+    _wbi_cache["fetched_at"] = time.time()
     logger.info(f"WBI keys refreshed, next refresh in {_WBI_CACHE_TTL // 60} min")
     
     return img_key, sub_key
+
+
+async def get_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
+    """获取 WBI 签名所需的 img_key 和 sub_key，带内存缓存（TTL 2 小时）。
+    
+    B 站 WBI key 每天才轮换一次，高频调用 /nav 接口极易触发 412/403 风控。
+    缓存命中时直接返回，不发起任何网络请求。
+    使用锁防止并发刷新。
+    """
+    global _wbi_cache
+    
+    async with _wbi_lock:
+        now = time.time()
+        
+        # 缓存有效则直接返回，不请求网络
+        if (
+            _wbi_cache["img_key"]
+            and _wbi_cache["sub_key"]
+            and (now - _wbi_cache["fetched_at"]) < _WBI_CACHE_TTL
+        ):
+            logger.debug("WBI keys cache hit, skipping /nav request")
+            return _wbi_cache["img_key"], _wbi_cache["sub_key"]
+        
+        # 缓存过期或首次请求，重新拉取
+        return await _refresh_wbi_keys(client)
 
 async def get_up_info(uid: str) -> dict:
     try:
