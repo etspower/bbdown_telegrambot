@@ -13,9 +13,21 @@ from bot.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
+# 增强的请求头，模拟真实浏览器环境，降低被风控的概率
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-    "Referer": "https://space.bilibili.com/"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://space.bilibili.com/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://space.bilibili.com",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
 # --- WBI 密钥内存缓存 ---
@@ -66,9 +78,17 @@ def _load_cookies_from_disk() -> dict:
     """从磁盘同步读取 BBDown.data，返回 cookies dict。
     
     仅在启动时或检测到文件变化时调用，不在热路径中执行。
+    添加更多必要的 cookies 来绕过 B 站风控。
     """
     buvid3 = _load_buvid3()  # 使用持久化的 UUID，避免 B 站风控拦截
-    cookies = {"buvid3": buvid3}
+    cookies = {
+        "buvid3": buvid3,
+        "b_nut": str(int(time.time())),
+        "CURRENT_FNVAL": "4048",
+        "buvid4": buvid3 + "-" + str(int(time.time())) + "-" + str(uuid.uuid4())[:8].upper(),
+        "buvid_fp": buvid3,
+        "b_lsid": str(uuid.uuid4())[:8].upper() + "_" + str(int(time.time())),
+    }
     try:
         data_file = os.path.join(DATA_DIR, "BBDown.data")
         if os.path.exists(data_file):
