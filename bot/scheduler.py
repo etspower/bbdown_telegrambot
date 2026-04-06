@@ -9,7 +9,9 @@ from aiogram.types import FSInputFile
 from bot.database import (
     get_all_subscriptions, 
     is_bvid_downloaded, 
+    is_bvid_downloading,
     mark_bvid_downloaded,
+    mark_bvid_downloading,
     mark_bvid_abandoned,
     increment_retry_count,
     MAX_RETRY,
@@ -58,8 +60,12 @@ async def check_subscriptions(bot: Bot):
                     bvid = video['bvid']
                     title = video['title']
 
-                    if await is_bvid_downloaded(bvid):
+                    # 跳过已完成、已放弃或正在下载的视频
+                    if await is_bvid_downloaded(bvid) or await is_bvid_downloading(bvid):
                         continue
+
+                    # 先标记为 DOWNLOADING，防止重复触发
+                    await mark_bvid_downloading(sub.uid, bvid)
 
                     logger.info(f"[WBI API] New video for {sub.uid}: {title} ({bvid})")
                     await _upsert_new_video(sub.uid, bvid, title)
@@ -135,33 +141,38 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
         await retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=True)
         return
 
-    if result.return_code == 0:
-        downloaded_files = [
-            f for f in dl_dir.rglob("*")
-            if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']
-        ]
-        if downloaded_files:
-            # 按类型排序：视频 → 音频 → 其他
-            downloaded_files = _sort_downloaded_files(downloaded_files)
-            try:
-                await msg.edit_text("Uploading file...")
-                for f in downloaded_files:
-                    fobj = FSInputFile(str(f))
-                    ext = f.suffix.lower()
-                    if ext in VIDEO_EXT:
-                        await bot.send_video(chat_id, fobj, caption=title)
-                    elif ext in AUDIO_EXT:
-                        await bot.send_audio(chat_id, fobj, caption=title)
-                    else:
-                        await bot.send_document(chat_id, fobj, caption=title)
-                await msg.delete()
-                await mark_bvid_downloaded(uid, bvid)
-                shutil.rmtree(dl_dir, ignore_errors=True)
-                return  # 成功路径直接返回，不进入重试计数逻辑
-            except Exception as e:
-                await msg.edit_text(f"Upload failed: {e}")
-        else:
+    # 对齐手动下载逻辑：有文件就尝试上传，不只看 return_code
+    downloaded_files = [
+        f for f in dl_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() not in ['.jpg', '.png']
+    ]
+    
+    if downloaded_files:
+        # 按类型排序：视频 → 音频 → 其他
+        downloaded_files = _sort_downloaded_files(downloaded_files)
+        try:
+            await msg.edit_text("Uploading file...")
+            for f in downloaded_files:
+                fobj = FSInputFile(str(f))
+                ext = f.suffix.lower()
+                if ext in VIDEO_EXT:
+                    await bot.send_video(chat_id, fobj, caption=title)
+                elif ext in AUDIO_EXT:
+                    await bot.send_audio(chat_id, fobj, caption=title)
+                else:
+                    await bot.send_document(chat_id, fobj, caption=title)
+            await msg.delete()
+            await mark_bvid_downloaded(uid, bvid)
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            return  # 成功路径直接返回，不进入重试计数逻辑
+        except Exception as e:
+            await msg.edit_text(f"Upload failed: {e}")
+    else:
+        # 没有文件，根据 return_code 判断错误类型
+        if result.return_code == 0:
             await msg.edit_text("Download succeeded but file not found.")
+        else:
+            await msg.edit_text(f"Download failed with exit code {result.return_code}.")
 
     # 失败路径：增加重试计数
     await retry_and_cleanup(bot, chat_id, uid, bvid, title, dl_dir, is_timeout=False)

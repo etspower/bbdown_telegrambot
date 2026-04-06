@@ -50,6 +50,57 @@ def _sort_downloaded_files(files):
         return 2
     return sorted(files, key=_key)
 
+
+def _parse_pages(text: str, total_pages: int) -> list[int]:
+    """
+    解析用户输入的分P范围。
+    
+    支持格式：
+    - "1-3,5,7" → [1, 2, 3, 5, 7]
+    - "1,3,5" → [1, 3, 5]
+    - "1-5" → [1, 2, 3, 4, 5]
+    
+    Args:
+        text: 用户输入的字符串
+        total_pages: 视频总P数（用于边界限制）
+    
+    Returns:
+        排序后的页码列表
+    
+    Raises:
+        ValueError: 解析失败时抛出
+    """
+    text = text.replace(" ", "").replace("，", ",")
+    pages = set()
+    
+    if not text:
+        raise ValueError("Empty input")
+    
+    for part in text.split(","):
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start, end = map(int, part.split("-", 1))
+                start = max(1, start)
+                end = min(total_pages, end)
+                if start <= end:
+                    pages.update(range(start, end + 1))
+            except ValueError:
+                raise ValueError(f"Invalid range: {part}")
+        else:
+            try:
+                p = int(part)
+                if 1 <= p <= total_pages:
+                    pages.add(p)
+            except ValueError:
+                raise ValueError(f"Invalid page number: {part}")
+    
+    if not pages:
+        raise ValueError("No valid pages found")
+    
+    return sorted(pages)
+
 logger = logging.getLogger(__name__)
 router = Router()
 router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.from_user.id))
@@ -665,7 +716,7 @@ async def get_video_info(url: str) -> Optional[dict]:
     result = await run_bbdown_simple([url, "--only-show-info", "--show-all"], DATA_DIR, timeout=DEFAULT_INFO_TIMEOUT)
     
     # 先尝试解析输出，即使 return_code != 0 也可能包含有效信息
-    title = "Unknown Title"
+    title = None
     total_pages = 1
     parts = []
 
@@ -680,15 +731,15 @@ async def get_video_info(url: str) -> Optional[dict]:
             parts.append({"index": int(part_match.group(1)), "title": part_match.group(3).strip()})
 
     # 如果成功解析到标题，认为解析成功
-    if title != "Unknown Title":
+    if title:
         return {"title": title, "total_pages": total_pages, "parts": parts}
     
     # 只有在没有解析到任何有用信息时才报错
     if result.return_code != 0:
         error_snippet = result.output[:500] if result.output else "(无输出)"
         logger.error(f"❌ BBDown 解析失败 [{url}]: return_code={result.return_code}\n完整输出:\n{error_snippet}")
-        result.error = error_snippet
-        return None
+    
+    return None
 
 # ----------------------------
 # 4. Old Flow Handlers (Selections)
@@ -742,25 +793,18 @@ async def process_custom_pages(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("会话已过期，请重新发送视频链接。")
         
-    text = message.text.replace(" ", "").replace("，", ",")
+    text = message.text.strip()
     total_pages = data.get("total_pages", 1)
-    pages = []
     
     try:
-        parts = text.split(',')
-        for part in parts:
-            if not part: continue
-            if '-' in part:
-                start, end = map(int, part.split('-'))
-                start = max(1, start); end = min(total_pages, end)
-                if start <= end: pages.extend(range(start, end + 1))
-            else:
-                p = int(part)
-                if 1 <= p <= total_pages: pages.append(p)
-        pages = sorted(list(set(pages)))
-        if not pages: raise ValueError("No valid pages found")
-    except Exception:
-        return await message.answer("❌ 格式错误！请重试或者发送新的网址取消操作。正确格式例如: `1-5,7`", parse_mode="Markdown")
+        pages = _parse_pages(text, total_pages)
+    except ValueError as e:
+        return await message.answer(
+            f"❌ 格式错误：{e}\n\n"
+            f"请重试或发送新的网址取消操作。\n"
+            f"正确格式例如: `1-5,7` 或 `1,3,5`",
+            parse_mode="Markdown"
+        )
         
     await state.clear()
     status_msg = await message.answer("✅ 自定义页数锁定，开始提取队列...")

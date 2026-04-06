@@ -44,12 +44,13 @@ def _extract_bvid(url: str) -> Optional[str]:
 async def fetch_all_video_urls(
     uid: str,
     status_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-) -> int:
+) -> tuple[int, int]:
     """
     Run BBDown to enumerate all video URLs on a UP master's space page.
     Inserts new BVIDs into up_videos table.
 
-    Returns the count of newly inserted video URLs.
+    Returns:
+        (new_count, total_count) - 新增数量和总数
     """
     space_url = f"https://space.bilibili.com/{uid}"
     args = [
@@ -87,7 +88,7 @@ async def fetch_all_video_urls(
             f"✅ 扫描完毕！共发现 **{total}** 个视频 URL，其中 **{new_count}** 个为新增。"
         )
 
-    return new_count
+    return new_count, len(unique_urls)
 
 
 async def parse_one_video(bvid: str, url: str) -> Optional[str]:

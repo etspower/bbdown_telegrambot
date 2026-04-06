@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func
+from sqlalchemy import String, Integer, Boolean, DateTime, select, delete, text, func, UniqueConstraint
 from pathlib import Path
 
 from bot.config import DATA_DIR
@@ -26,6 +26,8 @@ Base = declarative_base()
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (UniqueConstraint("uid", "chat_id", name="uq_uid_chat"),)
+    
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(50), nullable=False)
     up_name: Mapped[str] = mapped_column(String(100), nullable=True)
@@ -34,9 +36,10 @@ class Subscription(Base):
 
 class DLStatus(str, enum.Enum):
     """Download history status to distinguish success from abandoned retries."""
-    PENDING   = "pending"    # Discovered but not yet downloaded
-    DONE      = "done"       # Successfully pushed to Telegram
-    ABANDONED = "abandoned"  # Exceeded retry limit, gave up
+    PENDING   = "pending"      # Discovered but not yet downloaded
+    DOWNLOADING = "downloading"  # Currently being processed
+    DONE      = "done"         # Successfully pushed to Telegram
+    ABANDONED = "abandoned"    # Exceeded retry limit, gave up
 
 class DownloadHistory(Base):
     __tablename__ = "download_history"
@@ -150,6 +153,33 @@ async def is_bvid_downloaded(bvid: str) -> bool:
         if record is None:
             return False
         return record.status in (DLStatus.DONE.value, DLStatus.ABANDONED.value)
+
+async def is_bvid_downloading(bvid: str) -> bool:
+    """Check if a video is currently being downloaded."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            return False
+        return record.status == DLStatus.DOWNLOADING.value
+
+async def mark_bvid_downloading(uid: str, bvid: str):
+    """Mark a video as currently being downloaded."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(DownloadHistory).where(DownloadHistory.bvid == bvid)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.status = DLStatus.DOWNLOADING.value
+        else:
+            session.add(DownloadHistory(
+                uid=uid, bvid=bvid, retry_count=0,
+                status=DLStatus.DOWNLOADING.value
+            ))
+        await session.commit()
 
 async def mark_bvid_downloaded(uid: str, bvid: str):
     """Mark a video as successfully downloaded and pushed."""
