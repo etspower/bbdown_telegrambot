@@ -178,10 +178,16 @@ class SubprocessExecutor:
                         for m in SIZE_PATTERN.finditer(line):
                             val = float(m.group(1))
                             unit = m.group(2).upper()
-                            if "/s" in line[m.end()-2:m.end()] or "MB/s" in line or "GB/s" in line:
+                            # 检查是否是速度（带 /s）
+                            remaining = line[m.end():m.end()+3] if m.end() < len(line) else ""
+                            if "/s" in remaining or "MB/s" in line or "GB/s" in line or "KB/s" in line:
                                 speed = f"{val:.2f} {unit}/s"
                             else:
                                 size = f"{val:.2f} {unit}"
+                        
+                        # 调试日志：记录解析到的进度信息
+                        if percentage > 0 or size or speed:
+                            logger.debug(f"Progress: {percentage:.1f}% | size={size} | speed={speed} | line={line[:80]}")
                         
                         yield ProgressUpdate(
                             percentage=percentage,

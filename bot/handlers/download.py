@@ -403,6 +403,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 # 使用统一的 SubprocessExecutor
                 executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
                 
+                # 改进进度更新逻辑：更积极地更新，降低节流时间
+                min_update_interval = 1.5  # 降低到 1.5 秒
+                
                 async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
                     pct = progress.percentage
                     line = progress.line or ""
@@ -415,16 +418,29 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         extra_parts.append(f"⚡ {progress.speed}")
                     extra = " | ".join(extra_parts) if extra_parts else ""
                     
-                    # 每 2 秒或进度变化 >= 3% 时更新
-                    if pct > 0 and abs(pct - last_percentage) >= 3.0:
-                        await update_progress("下载中", pct, extra)
-                        last_percentage = pct
-                    elif pct >= 100.0:
-                        await update_progress("🔄 封装处理中...", 100, extra)
-                    elif extra and (time.time() - last_update_time) >= 3.0:
-                        # 即使没有进度百分比，也定期更新文件大小信息
-                        await update_progress("下载中", pct, extra)
-                        last_update_time = time.time()
+                    # 更新条件（满足任一即更新）：
+                    # 1. 进度变化 >= 2%
+                    # 2. 有额外信息且超过 min_update_interval 秒
+                    # 3. 进度达到 100%
+                    current_time = time.time()
+                    time_since_update = current_time - last_update_time
+                    
+                    should_update = (
+                        (pct > 0 and abs(pct - last_percentage) >= 2.0) or
+                        (extra and time_since_update >= min_update_interval) or
+                        pct >= 100.0
+                    )
+                    
+                    if should_update:
+                        if pct >= 100.0:
+                            await update_progress("🔄 封装处理中...", 100, extra)
+                        elif pct > 0:
+                            await update_progress("下载中", pct, extra)
+                            last_percentage = pct
+                        elif extra:
+                            # 即使没有百分比，也显示文件大小/速度信息
+                            await update_progress("下载中", 0, extra)
+                            last_update_time = current_time
                 
                 result = await executor.wait()
                 
@@ -485,12 +501,14 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             # 显示上传进度
             file_count = len(downloaded_files)
             await status_msg.edit_text(
-                f"☁️ **上传中** P{p}\n📦 {total_size:.1f} MB ({file_count} 个文件)\n⏳ 请稍候...",
+                f"☁️ **准备上传** P{p}\n📦 {total_size:.1f} MB ({file_count} 个文件)\n⏳ 正在连接 Telegram...",
                 parse_mode="Markdown"
             )
 
             try:
                 sent_count = 0
+                upload_start_time = time.time()
+                
                 for f in downloaded_files:
                     ext = f.suffix.lower()
                     file_size_mb = f.stat().st_size / (1024 * 1024)
@@ -499,7 +517,16 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     # 大文件提示 - 使用长时间超时
                     if file_size_mb > 50:
                         await status_msg.edit_text(
-                            f"☁️ **上传大文件** ({file_size_mb:.1f} MB)\n⏳ Telegram 服务器响应较慢，请耐心等待...",
+                            f"☁️ **上传大文件** {sent_count + 1}/{file_count}\n"
+                            f"📦 {file_size_mb:.1f} MB\n"
+                            f"⏳ Telegram 服务器响应较慢，请耐心等待...\n"
+                            f"💡 提示：上传不会显示进度条，但正在进行中",
+                            parse_mode="Markdown"
+                        )
+                    elif file_count > 1:
+                        await status_msg.edit_text(
+                            f"☁️ **上传中** {sent_count + 1}/{file_count}\n"
+                            f"📦 {file_size_mb:.1f} MB",
                             parse_mode="Markdown"
                         )
                     
@@ -542,9 +569,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     
                     sent_count += 1
                     
-                    if file_count > 1:
+                    # 更新上传进度（多文件时）
+                    if file_count > 1 and sent_count < file_count:
+                        upload_elapsed = time.time() - upload_start_time
                         await status_msg.edit_text(
-                            f"☁️ **上传进度** {sent_count}/{file_count}",
+                            f"☁️ **已上传** {sent_count}/{file_count}\n"
+                            f"⏱️ {int(upload_elapsed // 60)}:{int(upload_elapsed % 60):02d}",
                             parse_mode="Markdown"
                         )
                 
