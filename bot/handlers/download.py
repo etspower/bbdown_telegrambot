@@ -53,13 +53,18 @@ class DownloadSession(StatesGroup):
     waiting_for_pages = State()    # 等待输入分P范围
 
 
-@router.message(F.text.regexp(URL_PATTERN))
+@router.message(F.text)
 async def handle_bilibili_link(message: types.Message, state: FSMContext):
     """处理 Bilibili 链接（兼容手机/电脑分享格式）"""
-    await state.clear()
+    if not message.text:
+        return
+    
+    # 从消息中搜索 Bilibili URL
     match = URL_PATTERN.search(message.text)
     if not match:
-        return
+        return  # 不是 Bilibili 链接，交给其他 handler
+    
+    await state.clear()
     # 清理 URL 末尾可能残留的标点（中文句号、顿号等）
     url = match.group(0).rstrip("。，、；：！？…—")
     await trigger_download_selection(message, state, url)
