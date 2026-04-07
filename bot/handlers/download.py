@@ -386,6 +386,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             last_percentage = 0.0
             current_text = ""
             downloaded_size = 0  # MB
+            expected_total_size = 0.0  # 期望的总大小（MB）
+            last_known_size = 0.0  # 上次检查的文件大小
+            estimated_percentage = 0.0  # 基于文件大小的估计百分比
             
             async def update_progress(status: str, percentage: float = None, extra: str = ""):
                 """更新进度显示，3秒节流"""
@@ -427,12 +430,49 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 # 改进进度更新逻辑：更积极地更新，降低节流时间
                 min_update_interval = 1.5  # 降低到 1.5 秒
                 
+                # 查找可能正在下载的文件（.mp4, .m4a, .temp 等）
+                def get_downloading_file_size():
+                    """获取当前正在下载的文件总大小"""
+                    total_size = 0
+                    if dl_dir.exists():
+                        for f in dl_dir.iterdir():
+                            if f.is_file() and (f.suffix in ['.mp4', '.m4a', '.flv', '.temp', '.downloading'] or '.download' in f.name):
+                                try:
+                                    total_size += f.stat().st_size / (1024 * 1024)  # MB
+                                except:
+                                    pass
+                    return total_size
+                
                 async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
                     pct = progress.percentage
                     line = progress.line or ""
                     
+                    # 从 BBDown 输出中实时提取各流的总大小（如果还没提取）
+                    if expected_total_size == 0:
+                        for out_line in executor._output_lines:
+                            size_match = re.search(r'([\d.]+)\s*MB', out_line, re.IGNORECASE)
+                            if size_match:
+                                size_mb = float(size_match.group(1))
+                                if size_mb > 1.0:  # 排除太小的
+                                    expected_total_size += size_mb
+                        if expected_total_size > 0:
+                            logger.info(f"📊 期望总大小: {expected_total_size:.2f} MB")
+                    
                     # 构建额外信息
                     extra_parts = []
+                    
+                    # 如果没有从 BBDown 获取到百分比，尝试从文件大小估算
+                    if pct == 0 and expected_total_size > 0:
+                        current_file_size = get_downloading_file_size()
+                        if current_file_size > last_known_size:
+                            # 文件正在增长，估算进度
+                            estimated_percentage = min(99.0, (current_file_size / expected_total_size) * 100)
+                            last_known_size = current_file_size
+                        
+                        if estimated_percentage > 0:
+                            extra_parts.append(f"📦 {current_file_size:.1f}/{expected_total_size:.1f} MB")
+                            pct = estimated_percentage
+                    
                     if progress.size:
                         extra_parts.append(f"📦 {progress.size}")
                     if progress.speed:
