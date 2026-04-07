@@ -31,8 +31,16 @@ DEFAULT_SCAN_TIMEOUT = 600       # 10 分钟（扫描 UP 主全部视频）
 # BBDown 格式: "下载中... 45.5%" 或 "45.5%" 或 "[45.5%]" 或 "Downloading... 45.5%"
 # ffmpeg 格式: "frame= 123 fps=30 q=28.0 size= 12345kB time=00:01:23.45 bitrate=1234.5kbits/s speed=1.23x"
 PROGRESS_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
-# 文件大小和速度格式: "12.34 MB" 或 "1.23 GB" 或 "1.23 MB/s"
+
+# ffmpeg 格式的进度解析：time=00:01:23.45 表示当前时间
+FFMPEG_TIME_PATTERN = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})")
+
+# 文件大小和速度格式: "12.34 MB" 或 "1.23 GB" 或 "1.23 MB/s" 或 "12345kB"
 SIZE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(MB|GB|KB)(?:/s)?", re.IGNORECASE)
+# ffmpeg 的 kB 格式
+FFMPEG_SIZE_PATTERN = re.compile(r"size=\s*(\d+)(kB|MB)", re.IGNORECASE)
+# ffmpeg 的速度格式
+FFMPEG_SPEED_PATTERN = re.compile(r"speed=\s*(\d+(?:\.\d+)?)\s*x", re.IGNORECASE)
 # 时间格式: "00:01:23" 或 "1:23"
 TIME_PATTERN = re.compile(r"(\d+):(\d{2})(?::(\d{2}))?")
 
@@ -166,21 +174,47 @@ class SubprocessExecutor:
                 
                 # 调试：记录所有 BBDown 输出（帮助诊断进度问题）
                 # 先检查是否是进度相关行
-                has_progress_keywords = any(kw in line.lower() for kw in ["下载", "download", "%", "进度", "progress", "mbit", "mb/", "kb/"])
-                if has_progress_keywords:
+                has_progress_keywords = any(kw in line.lower() for kw in ["下载", "download", "%", "进度", "progress", "mbit", "mb/", "kb/", "frame=", "time=", "speed="])
+                if has_progress_keywords or any(kw in line for kw in ["开始下载P", "完毕", "合并", "失败"]):
                     logger.info(f"📥 BBDown 输出: {line[:150]}")
                 
                 # 检查进度 - 即使没有百分比也 yield 进度更新（用于显示文件大小等）
                 match = PROGRESS_PATTERN.search(line)
                 size_match = SIZE_PATTERN.search(line)
                 
-                if match or size_match:
+                if match or size_match or FFMPEG_TIME_PATTERN.search(line):
                     try:
                         percentage = float(match.group(1)) if match else 0.0
                         size = None
                         speed = None
+                        extra_info = None
                         
-                        # 解析文件大小和速度
+                        # 解析 ffmpeg 格式的进度（time=00:01:23.45）
+                        ff_time_match = FFMPEG_TIME_PATTERN.search(line)
+                        if ff_time_match:
+                            hours = int(ff_time_match.group(1))
+                            minutes = int(ff_time_match.group(2))
+                            seconds = int(ff_time_match.group(3))
+                            current_seconds = hours * 3600 + minutes * 60 + seconds
+                            extra_info = f"time={current_seconds}s"
+                        
+                        # 解析 ffmpeg 格式的文件大小 size=12345kB
+                        ff_size_match = FFMPEG_SIZE_PATTERN.search(line)
+                        if ff_size_match:
+                            size_val = int(ff_size_match.group(1))
+                            size_unit = ff_size_match.group(2).upper()
+                            if size_unit == 'KB':
+                                size = f"{size_val/1024:.2f} MB"
+                            else:
+                                size = f"{size_val:.2f} MB"
+                        
+                        # 解析 ffmpeg 格式的速度 speed=1.23x
+                        ff_speed_match = FFMPEG_SPEED_PATTERN.search(line)
+                        if ff_speed_match:
+                            speed_val = float(ff_speed_match.group(1))
+                            speed = f"{speed_val:.2f}x"
+                        
+                        # 解析传统格式的文件大小和速度
                         for m in SIZE_PATTERN.finditer(line):
                             val = float(m.group(1))
                             unit = m.group(2).upper()
@@ -192,7 +226,8 @@ class SubprocessExecutor:
                                 size = f"{val:.2f} {unit}"
                         
                         # 调试日志：记录解析到的进度信息（使用 info 级别）
-                        logger.info(f"📊 进度解析: {percentage:.1f}% | size={size} | speed={speed}")
+                        if percentage > 0 or size or speed or extra_info:
+                            logger.info(f"📊 进度: {percentage:.1f}% | size={size} | speed={speed} | {extra_info or ''}")
                         
                         yield ProgressUpdate(
                             percentage=percentage,
