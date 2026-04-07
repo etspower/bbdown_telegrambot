@@ -324,30 +324,37 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     title = session.get("title", "Unknown")
     
     cmd_args = [url]
+    quality_text = "最高画质"
+    
     # 画质选择 - 使用 BBDown 的画质优先级参数
-    # -q, --dfn-priority: 画质优先级，用逗号分隔
-    # 使用 config.py 中定义的 QUALITY_PRIORITY 映射
+    # 重要：BBDown 的 -q 是优先级列表，会选择列表中第一个可用的画质名称
+    # 如果视频没有提供列表中的任何画质，BBDown 会使用默认最高画质
     if action == "audio":
         cmd_args.append("--audio-only")
+        quality_text = "仅音频"
     elif action == "danmaku":
         cmd_args.append("--danmaku")
+        quality_text = "仅弹幕"
     elif action == "sub":
         cmd_args.append("--sub-only")
+        quality_text = "仅字幕"
     elif action in QUALITY_PRIORITY:
         priority_list = QUALITY_PRIORITY[action]
         if priority_list:  # 空列表表示不限制画质
-            cmd_args.extend(["-q", ",".join(priority_list)])
-    # 默认情况下（best）不添加 -q 参数，BBDown 自动选择最高画质
+            quality_arg = ",".join(priority_list)
+            cmd_args.extend(["-q", quality_arg])
+            quality_text = {"1080": "1080P", "720": "720P", "480": "480P", "360": "360P"}.get(action, action)
+            logger.info(f"🎨 画质限制: {action} -> -q {quality_arg[:80]}...")
+    else:
+        quality_text = "最高画质"
+    
+    # 调试：打印完整的 BBDown 命令
+    logger.info(f"🔧 BBDown 命令: {BBDOWN_PATH} {' '.join(str(x) for x in cmd_args[:5])}... (共 {len(cmd_args)} 参数)")
     
     # 使用 URL hash 作为下载目录标识
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
     dl_base = Path(DATA_DIR) / "downloads" / dl_id
     dl_base.mkdir(parents=True, exist_ok=True)
-    
-    quality_text = {
-        "best": "最高画质", "1080": "1080P", "720": "720P",
-        "480": "480P", "360": "360P", "audio": "音频", "danmaku": "弹幕"
-    }.get(action, "最高画质")
     
     await status_msg.edit_text(
         f"🚀 **开始下载**\n📺 `{title}`\n🎨 画质: {quality_text}\n📦 分P: {len(pages)} 个",
@@ -396,17 +403,21 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
 
             try:
                 await status_msg.edit_text(
-                    f"📥 **开始下载 P{p}** ({i+1}/{len(pages)})\n📺 `{title}`",
+                    f"📥 **开始下载 P{p}** ({i+1}/{len(pages)})\n📺 `{title}`\n🎨 画质: {quality_text}",
                     parse_mode="Markdown"
                 )
                 
                 # 使用统一的 SubprocessExecutor
                 executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
                 
+                # 构建完整的 BBDown 命令
+                bbdown_cmd = [BBDOWN_PATH] + current_cmd_args
+                logger.debug(f"🔧 执行命令: {' '.join(bbdown_cmd)}")
+                
                 # 改进进度更新逻辑：更积极地更新，降低节流时间
                 min_update_interval = 1.5  # 降低到 1.5 秒
                 
-                async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
+                async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
                     pct = progress.percentage
                     line = progress.line or ""
                     
@@ -443,6 +454,21 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             last_update_time = current_time
                 
                 result = await executor.wait()
+                
+                # 从 BBDown 输出中提取实际选择的画质信息
+                actual_quality = None
+                for line in result.output.split('\n') if result.output else []:
+                    # BBDown 输出格式示例: "已选择清晰度: 1080P 高码率" 或 "Selected quality: 1080P"
+                    if "清晰度" in line or "quality" in line.lower() or "dfn" in line.lower():
+                        logger.info(f"📺 画质选择输出: {line.strip()}")
+                        # 尝试提取画质信息
+                        for q in ["1080P", "720P", "480P", "360P", "8K", "4K", "HDR", "杜比"]:
+                            if q in line:
+                                actual_quality = q
+                                break
+                
+                if actual_quality:
+                    logger.info(f"📺 实际下载画质: {actual_quality}")
                 
             except asyncio.CancelledError:
                 await executor.kill()

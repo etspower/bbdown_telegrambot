@@ -164,6 +164,10 @@ class SubprocessExecutor:
                 
                 self._output_lines.append(line)
                 
+                # 调试：记录所有 BBDown 输出（帮助诊断画质选择问题）
+                if any(keyword in line.lower() for keyword in ["清晰度", "dfn", "quality", "resolution", "分辨率", "选择", "select"]):
+                    logger.info(f"📺 BBDown 画质信息: {line}")
+                
                 # 检查进度 - 即使没有百分比也 yield 进度更新（用于显示文件大小等）
                 match = PROGRESS_PATTERN.search(line)
                 size_match = SIZE_PATTERN.search(line)
