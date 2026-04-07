@@ -163,9 +163,14 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
         action_msg_text = "请选择你要提取的格式："
         
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🎬 最高画质直出 (默认推荐)", callback_data="dlq_best"))
+    # 画质选择按钮
+    builder.row(InlineKeyboardButton(text="🎬 最高画质 (推荐)", callback_data="dlq_best"))
+    builder.row(InlineKeyboardButton(text="📺 1080P", callback_data="dlq_1080"))
+    builder.row(InlineKeyboardButton(text="📺 720P", callback_data="dlq_720"))
+    builder.row(InlineKeyboardButton(text="📱 480P", callback_data="dlq_480"))
+    builder.row(InlineKeyboardButton(text="📱 360P", callback_data="dlq_360"))
     builder.row(InlineKeyboardButton(text="🎵 仅提取音频 (MP3/M4A)", callback_data="dlq_audio"))
-    builder.row(InlineKeyboardButton(text="📺 单独提取弹幕文件", callback_data="dlq_danmaku"))
+    builder.row(InlineKeyboardButton(text="💬 单独提取弹幕文件", callback_data="dlq_danmaku"))
     
     await message.answer(action_msg_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
@@ -208,7 +213,7 @@ async def get_video_info(url: str):
 
 @router.callback_query(F.data.startswith("dlq_"))
 async def handle_quality_selection(callback: types.CallbackQuery, state: FSMContext):
-    """处理画质选择"""
+    """处理画质选择，单P视频立即开始下载"""
     data = await state.get_data()
     if not data or "url" not in data:
         return await callback.answer("会话已过期，请重新发送视频链接。", show_alert=True)
@@ -219,23 +224,22 @@ async def handle_quality_selection(callback: types.CallbackQuery, state: FSMCont
     
     total_pages = data.get("total_pages", 1)
     
+    # 单 P 视频：直接开始下载
+    if total_pages == 1:
+        await callback.answer("🚀 开始下载...")
+        await start_multi_download(callback.message, data, [1])
+        return
+    
+    # 多 P 视频：显示分P选择
     builder = InlineKeyboardBuilder()
-    if total_pages > 1:
-        builder.row(InlineKeyboardButton(text="📥 下载所有 P (批量)", callback_data="dlp_all"))
-        builder.row(InlineKeyboardButton(text="🔽 仅下载 P1", callback_data="dlp_1"))
-        builder.row(InlineKeyboardButton(text="✏️ 自定义 P 数范围", callback_data="dlp_custom"))
-        await callback.message.edit_text(
-            f"**这是一个合集视频** (总共 {total_pages} P)。\n您希望下载哪些章节？",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
-    else:
-        builder.row(InlineKeyboardButton(text="🚀 开始下载并上传", callback_data="dlp_1"))
-        await callback.message.edit_text(
-            f"配置完毕，**准备就绪**。\n点击启动后将在后台处理，请耐心等待文件回传。",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+    builder.row(InlineKeyboardButton(text="📥 下载所有 P (批量)", callback_data="dlp_all"))
+    builder.row(InlineKeyboardButton(text="🔽 仅下载 P1", callback_data="dlp_1"))
+    builder.row(InlineKeyboardButton(text="✏️ 自定义 P 数范围", callback_data="dlp_custom"))
+    await callback.message.edit_text(
+        f"**这是一个合集视频** (总共 {total_pages} P)。\n您希望下载哪些章节？",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
 
 
 @router.callback_query(F.data.startswith("dlp_"))
@@ -306,19 +310,37 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     title = session.get("title", "Unknown")
     
     cmd_args = [url]
+    # 画质选择
     if action == "audio":
         cmd_args.append("--audio-only")
     elif action == "danmaku":
         cmd_args.append("--danmaku")
     elif action == "sub":
         cmd_args.append("--sub-only")
+    elif action == "1080":
+        cmd_args.extend(["-q", "1080P"])
+    elif action == "720":
+        cmd_args.extend(["-q", "720P"])
+    elif action == "480":
+        cmd_args.extend(["-q", "480P"])
+    elif action == "360":
+        cmd_args.extend(["-q", "360P"])
+    # best 不需要额外参数，BBDown 默认最高画质
     
     # 使用 URL hash 作为下载目录标识
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
     dl_base = Path(DATA_DIR) / "downloads" / dl_id
     dl_base.mkdir(parents=True, exist_ok=True)
     
-    await status_msg.edit_text(f"🚀 已排队 {len(pages)} 个任务。\n当前: P{pages[0]}")
+    quality_text = {
+        "best": "最高画质", "1080": "1080P", "720": "720P",
+        "480": "480P", "360": "360P", "audio": "音频", "danmaku": "弹幕"
+    }.get(action, "最高画质")
+    
+    await status_msg.edit_text(
+        f"🚀 **开始下载**\n📺 `{title}`\n🎨 画质: {quality_text}\n📦 分P: {len(pages)} 个",
+        parse_mode="Markdown"
+    )
     
     try:
         for i, p in enumerate(pages):
@@ -329,42 +351,63 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             current_cmd_args = cmd_args.copy()
             current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
             
-            try:
-                await status_msg.edit_text(
-                    f"📥 **拉取数据库 P{p}** ({i+1}/{len(pages)})...\n标题: `{title}`",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            # 使用统一的 SubprocessExecutor
-            executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
-            
+            # 进度状态
+            download_start_time = time.time()
             last_update_time = time.time()
             last_percentage = 0.0
             current_text = ""
+            downloaded_size = 0  # MB
             
-            async def flush_ui(text: str, force: bool = False):
+            async def update_progress(status: str, percentage: float = None, extra: str = ""):
+                """更新进度显示，3秒节流"""
                 nonlocal last_update_time, current_text
                 current_time = time.time()
-                if force or (current_time - last_update_time) >= 3.0:
-                    full_text = f"📥 **正在进行任务 P{p}** ({i+1}/{len(pages)})\n{text}"
-                    if full_text != current_text:
-                        try:
-                            await status_msg.edit_text(full_text, parse_mode="Markdown")
-                            current_text = full_text
-                            last_update_time = current_time
-                        except Exception:
-                            pass
+                if current_time - last_update_time < 2.0 and not status.startswith(("✅", "❌", "☁️")):
+                    return
+                
+                elapsed = current_time - download_start_time
+                elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
+                
+                if percentage is not None:
+                    bar = create_progress_bar(percentage)
+                    text = f"📥 **下载 P{p}** ({i+1}/{len(pages)})\n`{bar}` {percentage:.1f}%\n⏱️ {elapsed_str}\n{extra}"
+                else:
+                    text = f"📥 **{status}**\n⏱️ {elapsed_str}\n{extra}"
+                
+                if text != current_text:
+                    try:
+                        await status_msg.edit_text(text, parse_mode="Markdown")
+                        current_text = text
+                        last_update_time = current_time
+                    except Exception:
+                        pass
 
             try:
+                await status_msg.edit_text(
+                    f"📥 **开始下载 P{p}** ({i+1}/{len(pages)})\n📺 `{title}`",
+                    parse_mode="Markdown"
+                )
+                
+                # 使用统一的 SubprocessExecutor
+                executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
+                
                 async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
-                    if abs(progress.percentage - last_percentage) >= 5.0 or (time.time() - last_update_time) >= 3.0:
-                        bar = create_progress_bar(progress.percentage)
-                        await flush_ui(f"`{bar}`", force=True)
-                        last_percentage = progress.percentage
-                    elif progress.percentage == 100.0:
-                        await flush_ui(f"🔄 **打包编码封装中，请等候...**", force=True)
+                    pct = progress.percentage
+                    # 解析 BBDown 输出获取下载大小和速度
+                    line = progress.line or ""
+                    size_match = re.search(r'(\d+\.?\d*)\s*(MB|GB)', line)
+                    if size_match:
+                        downloaded_size = float(size_match.group(1))
+                        unit = size_match.group(2)
+                        extra = f"📦 {downloaded_size:.1f} {unit}"
+                    else:
+                        extra = ""
+                    
+                    if abs(pct - last_percentage) >= 3.0:
+                        await update_progress("下载中", pct, extra)
+                        last_percentage = pct
+                    elif pct >= 100.0:
+                        await update_progress("🔄 封装处理中...", 100, extra)
                 
                 result = await executor.wait()
                 
@@ -384,17 +427,17 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             
             if result.timed_out:
                 await status_msg.answer(
-                    f"❌ **P{p} 下载超时，已强制终止 (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)**。",
+                    f"❌ **P{p} 下载超时** (超时 {DEFAULT_DOWNLOAD_TIMEOUT//60} 分钟)",
                     parse_mode="Markdown"
                 )
                 continue
             
             # 记录非零返回码（但可能仍有成功下载的文件）
             if result.return_code != 0:
-                logger.warning(f"⚠️ P{p} BBDown 返回非零退出码 {result.return_code}，但检查是否有成功下载的文件...")
+                logger.warning(f"⚠️ P{p} BBDown 返回非零退出码 {result.return_code}，检查文件...")
 
-            await flush_ui("☁️ **准备向 Telegram Cloud 上传结果...**", force=True)
-            await asyncio.sleep(1.5)
+            await update_progress("☁️ 上传到 Telegram...", None, f"📦 {downloaded_size:.1f} MB")
+            await asyncio.sleep(0.5)
             
             downloaded_files = [
                 f for f in dl_dir.rglob("*")
@@ -418,22 +461,54 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
 
             # 按类型排序后发送：视频 → 音频 → 其他
             downloaded_files = sort_downloaded_files(downloaded_files)
+            
+            # 计算总文件大小
+            total_size = sum(f.stat().st_size for f in downloaded_files) / (1024 * 1024)  # MB
+            
+            # 显示上传进度
+            file_count = len(downloaded_files)
+            await status_msg.edit_text(
+                f"☁️ **上传中** P{p}\n📦 {total_size:.1f} MB ({file_count} 个文件)\n⏳ 请稍候...",
+                parse_mode="Markdown"
+            )
 
             try:
+                sent_count = 0
                 for f in downloaded_files:
                     ext = f.suffix.lower()
+                    file_size_mb = f.stat().st_size / (1024 * 1024)
                     fobj = FSInputFile(str(f))
                     cap = f"{title} (P{p})"
+                    
+                    # 大文件提示
+                    if file_size_mb > 50:
+                        await status_msg.edit_text(
+                            f"☁️ **上传大文件** ({file_size_mb:.1f} MB)\n⏳ 可能需要较长时间...",
+                            parse_mode="Markdown"
+                        )
+                    
                     if ext in VIDEO_EXT:
                         await status_msg.answer_video(fobj, caption=cap)
                     elif ext in AUDIO_EXT:
                         await status_msg.answer_audio(fobj, caption=cap)
                     else:
                         await status_msg.answer_document(fobj, caption=cap)
-                await flush_ui(f"✅ **P{p} 传输完毕！**", force=True)
+                    sent_count += 1
+                    
+                    if file_count > 1:
+                        await status_msg.edit_text(
+                            f"☁️ **上传进度** {sent_count}/{file_count}",
+                            parse_mode="Markdown"
+                        )
+                
+                elapsed_total = time.time() - download_start_time
+                await status_msg.edit_text(
+                    f"✅ **P{p} 完成！**\n📦 {total_size:.1f} MB | ⏱️ {int(elapsed_total // 60)}:{int(elapsed_total % 60):02d}",
+                    parse_mode="Markdown"
+                )
             except Exception as e:
                 logger.error(f"Failed to send file: {e}")
-                await status_msg.answer(f"❌ 推送限制引发失败或阻断： {e}")
+                await status_msg.answer(f"❌ 推送失败：{e}")
 
     finally:
         # 全部P处理完毕后统一清理
