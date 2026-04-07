@@ -169,7 +169,7 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
     default_quality_name = QUALITY_OPTIONS.get(default_quality, "最高画质")
     
     builder = InlineKeyboardBuilder()
-    # 画质选择按钮
+    # 画质选择按钮 - 显示默认画质的具体内容
     builder.row(InlineKeyboardButton(text=f"⚙️ 默认设置 ({default_quality_name})", callback_data="dlq_default"))
     builder.row(InlineKeyboardButton(text="🎬 最高画质", callback_data="dlq_best"))
     builder.row(InlineKeyboardButton(text="📺 1080P", callback_data="dlq_1080"))
