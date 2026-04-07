@@ -233,8 +233,12 @@ async def handle_quality_selection(callback: types.CallbackQuery, state: FSMCont
         user_settings = await get_user_settings(callback.message.chat.id)
         action = user_settings.get("default_quality", DEFAULT_QUALITY) if user_settings else DEFAULT_QUALITY
     
-    # 将画质选项存入 FSM
+    # 将画质选项存入 FSM，并立即更新 data 字典
     await state.update_data(action=action)
+    data["action"] = action  # ← 关键：同步更新本地 data 字典
+    
+    # 调试：确认 action 已正确设置
+    logger.info(f"🎬 画质选择回调: action='{action}', data.action='{data.get('action')}'")
     
     total_pages = data.get("total_pages", 1)
     
