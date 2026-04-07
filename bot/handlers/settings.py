@@ -95,8 +95,12 @@ async def cb_quality_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"🎨 **默认画质设置**\n\n"
         f"当前: **{current_name}**\n\n"
+        f"📖 **画质说明：**\n"
+        f"• 最高画质：不限制，自动选择最佳\n"
+        f"• 1080P/720P/480P/360P：限制最高分辨率\n"
+        f"• 仅音频/弹幕/字幕：不下载视频\n\n"
         f"选择后，下载时默认使用此画质。\n"
-        f"你仍可在每次下载时手动选择其他画质。",
+        f"你仍可在每次下载时手动选择。",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )

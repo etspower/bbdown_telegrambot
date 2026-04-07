@@ -22,7 +22,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from bot.config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT, QUALITY_OPTIONS, DEFAULT_QUALITY
+from bot.config import (
+    BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT,
+    QUALITY_OPTIONS, QUALITY_PRIORITY, DEFAULT_QUALITY
+)
 from bot.subprocess_executor import (
     SubprocessExecutor, run_bbdown_simple,
     DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
@@ -169,15 +172,13 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
     default_quality_name = QUALITY_OPTIONS.get(default_quality, "最高画质")
     
     builder = InlineKeyboardBuilder()
-    # 画质选择按钮 - 显示默认画质的具体内容
+    # 默认设置按钮
     builder.row(InlineKeyboardButton(text=f"⚙️ 默认设置 ({default_quality_name})", callback_data="dlq_default"))
-    builder.row(InlineKeyboardButton(text="🎬 最高画质", callback_data="dlq_best"))
-    builder.row(InlineKeyboardButton(text="📺 1080P", callback_data="dlq_1080"))
-    builder.row(InlineKeyboardButton(text="📺 720P", callback_data="dlq_720"))
-    builder.row(InlineKeyboardButton(text="📱 480P", callback_data="dlq_480"))
-    builder.row(InlineKeyboardButton(text="📱 360P", callback_data="dlq_360"))
-    builder.row(InlineKeyboardButton(text="🎵 仅提取音频 (MP3/M4A)", callback_data="dlq_audio"))
-    builder.row(InlineKeyboardButton(text="💬 单独提取弹幕文件", callback_data="dlq_danmaku"))
+    
+    # 画质选择按钮 - 从配置动态生成
+    for action, display_name in QUALITY_OPTIONS.items():
+        if action != "best":  # best 在默认设置中显示
+            builder.row(InlineKeyboardButton(text=display_name, callback_data=f"dlq_{action}"))
     
     await message.answer(action_msg_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
@@ -325,29 +326,18 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     cmd_args = [url]
     # 画质选择 - 使用 BBDown 的画质优先级参数
     # -q, --dfn-priority: 画质优先级，用逗号分隔
-    # BBDown 的清晰度名称 (dfn) 格式示例:
-    #   "8K 超高清", "杜比视界", "HDR 真彩", "1080P 高码率", "1080P60", "1080P",
-    #   "720P60", "720P 高清", "720P", "480P 清晰", "480P", "360P 流畅", "360P"
-    # 注意：不同视频的清晰度名称可能不同，这里列出常见的
+    # 使用 config.py 中定义的 QUALITY_PRIORITY 映射
     if action == "audio":
         cmd_args.append("--audio-only")
     elif action == "danmaku":
         cmd_args.append("--danmaku")
     elif action == "sub":
         cmd_args.append("--sub-only")
-    elif action == "1080":
-        # 限制最高 1080P
-        cmd_args.extend(["-q", "1080P 高码率,1080P60,1080P,720P60,720P 高清,720P,480P,360P"])
-    elif action == "720":
-        # 限制最高 720P
-        cmd_args.extend(["-q", "720P60,720P 高清,720P,480P 清晰,480P,360P 流畅,360P"])
-    elif action == "480":
-        # 限制最高 480P
-        cmd_args.extend(["-q", "480P 清晰,480P,360P 流畅,360P"])
-    elif action == "360":
-        # 限制最高 360P
-        cmd_args.extend(["-q", "360P 流畅,360P"])
-    # best 不需要额外参数，BBDown 默认最高画质
+    elif action in QUALITY_PRIORITY:
+        priority_list = QUALITY_PRIORITY[action]
+        if priority_list:  # 空列表表示不限制画质
+            cmd_args.extend(["-q", ",".join(priority_list)])
+    # 默认情况下（best）不添加 -q 参数，BBDown 自动选择最高画质
     
     # 使用 URL hash 作为下载目录标识
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
