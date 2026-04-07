@@ -39,7 +39,11 @@ BBDOWN_TITLE_PREFIX = "视频标题:"
 BBDOWN_PAGES_PATTERN = re.compile(r'(\d+)\s*个分P')
 BBDOWN_PART_PATTERN = re.compile(r"-\s*P(\d+):\s*\[([^\]]+)\]\s*\[(.*)\]\s*\[([^\]]+)\]")
 
-URL_PATTERN = re.compile(r"(https?://(www\.)?(bilibili\.com|b23\.tv)/[^\s]+)")
+# 匹配消息中的 Bilibili / b23.tv URL（兼容手机/电脑分享格式）
+# 手机分享: 【标题】 https://b23.tv/Da7S8SH
+# 电脑分享: 【标题】 https://www.bilibili.com/video/BV.../?share_source=...
+# 带时间戳: 【标题】 【精准空降到 00:07】 https://...&t=7
+URL_PATTERN = re.compile(r"https?://(?:www\.)?(?:bilibili\.com|b23\.tv)/[^\s】]+")
 
 
 # --- FSM States ---
@@ -51,12 +55,14 @@ class DownloadSession(StatesGroup):
 
 @router.message(F.text.regexp(URL_PATTERN))
 async def handle_bilibili_link(message: types.Message, state: FSMContext):
-    """处理 Bilibili 链接"""
+    """处理 Bilibili 链接（兼容手机/电脑分享格式）"""
     await state.clear()
     match = URL_PATTERN.search(message.text)
     if not match:
         return
-    await trigger_download_selection(message, state, match.group(1))
+    # 清理 URL 末尾可能残留的标点（中文句号、顿号等）
+    url = match.group(0).rstrip("。，、；：！？…—")
+    await trigger_download_selection(message, state, url)
 
 
 async def trigger_download_selection(message: types.Message, state: FSMContext, url: str):
