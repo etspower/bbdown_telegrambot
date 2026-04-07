@@ -324,8 +324,11 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     
     cmd_args = [url]
     # 画质选择 - 使用 BBDown 的画质优先级参数
-    # -q, --dfn-priority: 画质优先级，用逗号分隔，如 "1080P 高码率, 1080P, 720P"
-    # 设置后会自动降档到最接近的可用画质
+    # -q, --dfn-priority: 画质优先级，用逗号分隔
+    # BBDown 的清晰度名称 (dfn) 格式示例:
+    #   "8K 超高清", "杜比视界", "HDR 真彩", "1080P 高码率", "1080P60", "1080P",
+    #   "720P60", "720P 高清", "720P", "480P 清晰", "480P", "360P 流畅", "360P"
+    # 注意：不同视频的清晰度名称可能不同，这里列出常见的
     if action == "audio":
         cmd_args.append("--audio-only")
     elif action == "danmaku":
@@ -333,17 +336,17 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     elif action == "sub":
         cmd_args.append("--sub-only")
     elif action == "1080":
-        # 1080P 优先，自动降档
-        cmd_args.extend(["-q", "1080P 高码率,1080P,720P"])
+        # 限制最高 1080P
+        cmd_args.extend(["-q", "1080P 高码率,1080P60,1080P,720P60,720P 高清,720P,480P,360P"])
     elif action == "720":
-        # 720P 优先，自动降档
-        cmd_args.extend(["-q", "720P,480P,360P"])
+        # 限制最高 720P
+        cmd_args.extend(["-q", "720P60,720P 高清,720P,480P 清晰,480P,360P 流畅,360P"])
     elif action == "480":
-        # 480P 优先，自动降档
-        cmd_args.extend(["-q", "480P,360P"])
+        # 限制最高 480P
+        cmd_args.extend(["-q", "480P 清晰,480P,360P 流畅,360P"])
     elif action == "360":
-        # 360P 优先，自动降档
-        cmd_args.extend(["-q", "360P"])
+        # 限制最高 360P
+        cmd_args.extend(["-q", "360P 流畅,360P"])
     # best 不需要额外参数，BBDown 默认最高画质
     
     # 使用 URL hash 作为下载目录标识
