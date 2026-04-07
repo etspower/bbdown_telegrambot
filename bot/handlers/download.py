@@ -323,6 +323,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     action = session.get("action", "best")
     title = session.get("title", "Unknown")
     
+    # 调试：确认 action 值
+    logger.info(f"🎯 用户选择 action: '{action}' (类型: {type(action).__name__})")
+    logger.info(f"📋 QUALITY_PRIORITY 包含的 keys: {list(QUALITY_PRIORITY.keys())}")
+    
     cmd_args = [url]
     quality_text = "最高画质"
     
@@ -348,8 +352,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     else:
         quality_text = "最高画质"
     
-    # 调试：打印完整的 BBDown 命令
-    logger.info(f"🔧 BBDown 命令: {BBDOWN_PATH} {' '.join(str(x) for x in cmd_args[:5])}... (共 {len(cmd_args)} 参数)")
+    # 调试：打印完整的 BBDown 命令（包含所有参数）
+    cmd_str = ' '.join(str(x) for x in cmd_args)
+    logger.info(f"🔧 BBDown 完整命令: {BBDOWN_PATH} {cmd_str}")
+    logger.info(f"🔧 cmd_args 列表: {cmd_args}")
     
     # 使用 URL hash 作为下载目录标识
     dl_id = hashlib.md5(url.encode()).hexdigest()[:8]
