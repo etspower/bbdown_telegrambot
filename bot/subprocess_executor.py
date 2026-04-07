@@ -27,8 +27,14 @@ DEFAULT_DOWNLOAD_TIMEOUT = 3600  # 1 小时（下载大文件）
 DEFAULT_INFO_TIMEOUT = 60        # 1 分钟（仅获取信息）
 DEFAULT_SCAN_TIMEOUT = 600       # 10 分钟（扫描 UP 主全部视频）
 
-# 进度百分比正则
-PROGRESS_PATTERN = re.compile(r"(\d+(\.\d+)?)%")
+# 进度百分比正则 - 支持多种格式
+# BBDown 格式: "下载中... 45.5%" 或 "45.5%" 或 "[45.5%]" 或 "Downloading... 45.5%"
+# ffmpeg 格式: "frame= 123 fps=30 q=28.0 size= 12345kB time=00:01:23.45 bitrate=1234.5kbits/s speed=1.23x"
+PROGRESS_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+# 文件大小和速度格式: "12.34 MB" 或 "1.23 GB" 或 "1.23 MB/s"
+SIZE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(MB|GB|KB)(?:/s)?", re.IGNORECASE)
+# 时间格式: "00:01:23" 或 "1:23"
+TIME_PATTERN = re.compile(r"(\d+):(\d{2})(?::(\d{2}))?")
 
 
 @dataclass
@@ -45,6 +51,8 @@ class ProgressUpdate:
     """进度更新事件"""
     percentage: float
     line: str
+    size: Optional[str] = None  # 如 "12.34 MB"
+    speed: Optional[str] = None  # 如 "1.23 MB/s"
 
 
 class SubprocessExecutor:
@@ -156,12 +164,31 @@ class SubprocessExecutor:
                 
                 self._output_lines.append(line)
                 
-                # 检查进度
+                # 检查进度 - 即使没有百分比也 yield 进度更新（用于显示文件大小等）
                 match = PROGRESS_PATTERN.search(line)
-                if match:
+                size_match = SIZE_PATTERN.search(line)
+                
+                if match or size_match:
                     try:
-                        percentage = float(match.group(1))
-                        yield ProgressUpdate(percentage=percentage, line=line)
+                        percentage = float(match.group(1)) if match else 0.0
+                        size = None
+                        speed = None
+                        
+                        # 解析文件大小和速度
+                        for m in SIZE_PATTERN.finditer(line):
+                            val = float(m.group(1))
+                            unit = m.group(2).upper()
+                            if "/s" in line[m.end()-2:m.end()] or "MB/s" in line or "GB/s" in line:
+                                speed = f"{val:.2f} {unit}/s"
+                            else:
+                                size = f"{val:.2f} {unit}"
+                        
+                        yield ProgressUpdate(
+                            percentage=percentage,
+                            line=line,
+                            size=size,
+                            speed=speed
+                        )
                     except ValueError:
                         pass
     

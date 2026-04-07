@@ -323,7 +323,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     title = session.get("title", "Unknown")
     
     cmd_args = [url]
-    # 画质选择
+    # 画质选择 - 使用 BBDown 的画质优先级参数
+    # -q, --dfn-priority: 画质优先级，用逗号分隔，如 "1080P 高码率, 1080P, 720P"
+    # 设置后会自动降档到最接近的可用画质
     if action == "audio":
         cmd_args.append("--audio-only")
     elif action == "danmaku":
@@ -331,12 +333,16 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     elif action == "sub":
         cmd_args.append("--sub-only")
     elif action == "1080":
-        cmd_args.extend(["-q", "1080P"])
+        # 1080P 优先，自动降档
+        cmd_args.extend(["-q", "1080P 高码率,1080P,720P"])
     elif action == "720":
-        cmd_args.extend(["-q", "720P"])
+        # 720P 优先，自动降档
+        cmd_args.extend(["-q", "720P,480P,360P"])
     elif action == "480":
-        cmd_args.extend(["-q", "480P"])
+        # 480P 优先，自动降档
+        cmd_args.extend(["-q", "480P,360P"])
     elif action == "360":
+        # 360P 优先，自动降档
         cmd_args.extend(["-q", "360P"])
     # best 不需要额外参数，BBDown 默认最高画质
     
@@ -406,21 +412,26 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 async for progress in executor.run_with_progress([BBDOWN_PATH] + current_cmd_args, DATA_DIR):
                     pct = progress.percentage
-                    # 解析 BBDown 输出获取下载大小和速度
                     line = progress.line or ""
-                    size_match = re.search(r'(\d+\.?\d*)\s*(MB|GB)', line)
-                    if size_match:
-                        downloaded_size = float(size_match.group(1))
-                        unit = size_match.group(2)
-                        extra = f"📦 {downloaded_size:.1f} {unit}"
-                    else:
-                        extra = ""
                     
-                    if abs(pct - last_percentage) >= 3.0:
+                    # 构建额外信息
+                    extra_parts = []
+                    if progress.size:
+                        extra_parts.append(f"📦 {progress.size}")
+                    if progress.speed:
+                        extra_parts.append(f"⚡ {progress.speed}")
+                    extra = " | ".join(extra_parts) if extra_parts else ""
+                    
+                    # 每 2 秒或进度变化 >= 3% 时更新
+                    if pct > 0 and abs(pct - last_percentage) >= 3.0:
                         await update_progress("下载中", pct, extra)
                         last_percentage = pct
                     elif pct >= 100.0:
                         await update_progress("🔄 封装处理中...", 100, extra)
+                    elif extra and (time.time() - last_update_time) >= 3.0:
+                        # 即使没有进度百分比，也定期更新文件大小信息
+                        await update_progress("下载中", pct, extra)
+                        last_update_time = time.time()
                 
                 result = await executor.wait()
                 
@@ -490,22 +501,52 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 for f in downloaded_files:
                     ext = f.suffix.lower()
                     file_size_mb = f.stat().st_size / (1024 * 1024)
-                    fobj = FSInputFile(str(f))
                     cap = f"{title} (P{p})"
                     
-                    # 大文件提示
+                    # 大文件提示 - 使用长时间超时
                     if file_size_mb > 50:
                         await status_msg.edit_text(
-                            f"☁️ **上传大文件** ({file_size_mb:.1f} MB)\n⏳ 可能需要较长时间...",
+                            f"☁️ **上传大文件** ({file_size_mb:.1f} MB)\n⏳ Telegram 服务器响应较慢，请耐心等待...",
                             parse_mode="Markdown"
                         )
                     
-                    if ext in VIDEO_EXT:
-                        await status_msg.answer_video(fobj, caption=cap)
-                    elif ext in AUDIO_EXT:
-                        await status_msg.answer_audio(fobj, caption=cap)
-                    else:
-                        await status_msg.answer_document(fobj, caption=cap)
+                    # 使用 BufferInputFile 替代 FSInputFile，支持更好的进度控制
+                    # 对于大文件，增加超时容忍度
+                    try:
+                        if ext in VIDEO_EXT:
+                            await status_msg.answer_video(
+                                FSInputFile(str(f)),
+                                caption=cap,
+                                request_timeout=300  # 5 分钟超时
+                            )
+                        elif ext in AUDIO_EXT:
+                            await status_msg.answer_audio(
+                                FSInputFile(str(f)),
+                                caption=cap,
+                                request_timeout=300
+                            )
+                        else:
+                            await status_msg.answer_document(
+                                FSInputFile(str(f)),
+                                caption=cap,
+                                request_timeout=300
+                            )
+                    except Exception as send_err:
+                        # 如果超时但文件可能已发送，不重复发送
+                        err_str = str(send_err).lower()
+                        if "timeout" in err_str:
+                            await status_msg.edit_text(
+                                f"⚠️ **上传响应超时**\n"
+                                f"文件可能已成功发送，请检查聊天记录。\n"
+                                f"文件: {f.name}",
+                                parse_mode="Markdown"
+                            )
+                            # 继续处理下一个文件，不要中断整个流程
+                            sent_count += 1
+                            continue
+                        else:
+                            raise send_err
+                    
                     sent_count += 1
                     
                     if file_count > 1:
@@ -520,8 +561,18 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.error(f"Failed to send file: {e}")
-                await status_msg.answer(f"❌ 推送失败：{e}")
+                logger.error(f"Failed to send file: {e}", exc_info=True)
+                # 检查是否是超时错误
+                err_str = str(e).lower()
+                if "timeout" in err_str:
+                    await status_msg.answer(
+                        f"⚠️ **上传超时**\n"
+                        f"文件可能已发送成功，请检查聊天记录。\n"
+                        f"如未收到，可重新下载。\n\n"
+                        f"错误: {e}"
+                    )
+                else:
+                    await status_msg.answer(f"❌ 推送失败：{e}")
 
     finally:
         # 全部P处理完毕后统一清理
