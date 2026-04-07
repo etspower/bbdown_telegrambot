@@ -67,6 +67,25 @@ class UpVideo(Base):
     )
 
 
+class UserSettings(Base):
+    """用户设置表，存储每个 chat_id 的偏好设置"""
+    __tablename__ = "user_settings"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    default_quality: Mapped[str] = mapped_column(String(20), nullable=False, default="best")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -306,3 +325,42 @@ async def get_recent_videos_by_uid(uid: str, limit: int = 10) -> list[UpVideo]:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+
+# ─────────────────────────── User Settings ────────────────────────────────
+
+async def get_user_settings(chat_id: int) -> dict | None:
+    """获取用户设置，返回 dict 或 None"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserSettings).where(UserSettings.chat_id == chat_id)
+        )
+        settings = result.scalar_one_or_none()
+        if settings:
+            return {
+                "default_quality": settings.default_quality,
+            }
+        return None
+
+
+async def set_user_settings(chat_id: int, settings: dict) -> None:
+    """设置用户偏好"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserSettings).where(UserSettings.chat_id == chat_id)
+        )
+        user_settings = result.scalar_one_or_none()
+        
+        if user_settings:
+            # 更新已有设置
+            if "default_quality" in settings:
+                user_settings.default_quality = settings["default_quality"]
+        else:
+            # 创建新设置
+            user_settings = UserSettings(
+                chat_id=chat_id,
+                default_quality=settings.get("default_quality", "best")
+            )
+            session.add(user_settings)
+        
+        await session.commit()

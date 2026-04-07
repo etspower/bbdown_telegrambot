@@ -22,12 +22,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from bot.config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT
+from bot.config import BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT, QUALITY_OPTIONS, DEFAULT_QUALITY
 from bot.subprocess_executor import (
     SubprocessExecutor, run_bbdown_simple,
     DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_INFO_TIMEOUT, create_progress_bar
 )
 from bot.utils import sort_downloaded_files, parse_pages
+from bot.database import get_user_settings
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -161,10 +162,16 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
     else:
         await status_msg.edit_text(f"📺 **{info['title']}**\n(Total Pages: 1)")
         action_msg_text = "请选择你要提取的格式："
-        
+    
+    # 获取用户默认画质设置
+    user_settings = await get_user_settings(message.chat.id)
+    default_quality = user_settings.get("default_quality", DEFAULT_QUALITY) if user_settings else DEFAULT_QUALITY
+    default_quality_name = QUALITY_OPTIONS.get(default_quality, "最高画质")
+    
     builder = InlineKeyboardBuilder()
     # 画质选择按钮
-    builder.row(InlineKeyboardButton(text="🎬 最高画质 (推荐)", callback_data="dlq_best"))
+    builder.row(InlineKeyboardButton(text=f"⚙️ 默认设置 ({default_quality_name})", callback_data="dlq_default"))
+    builder.row(InlineKeyboardButton(text="🎬 最高画质", callback_data="dlq_best"))
     builder.row(InlineKeyboardButton(text="📺 1080P", callback_data="dlq_1080"))
     builder.row(InlineKeyboardButton(text="📺 720P", callback_data="dlq_720"))
     builder.row(InlineKeyboardButton(text="📱 480P", callback_data="dlq_480"))
@@ -219,6 +226,12 @@ async def handle_quality_selection(callback: types.CallbackQuery, state: FSMCont
         return await callback.answer("会话已过期，请重新发送视频链接。", show_alert=True)
     
     action = callback.data.replace("dlq_", "")
+    
+    # 处理"默认设置"：从数据库读取用户设置的默认画质
+    if action == "default":
+        user_settings = await get_user_settings(callback.message.chat.id)
+        action = user_settings.get("default_quality", DEFAULT_QUALITY) if user_settings else DEFAULT_QUALITY
+    
     # 将画质选项存入 FSM
     await state.update_data(action=action)
     

@@ -101,5 +101,15 @@ if not _path_data.exists():
 VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
 AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 
+# 画质选项映射
+QUALITY_OPTIONS = {
+    "best": "最高画质",
+    "1080": "1080P",
+    "720": "720P",
+    "480": "480P",
+    "360": "360P"
+}
+DEFAULT_QUALITY = "best"  # 默认画质
+
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID

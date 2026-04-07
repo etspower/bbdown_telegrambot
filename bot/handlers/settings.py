@@ -4,6 +4,7 @@ bot/handlers/settings.py - 设置面板处理
 包含：
 - /settings 主菜单
 - 登录管理
+- 画质设置
 - 菜单关闭
 """
 
@@ -13,8 +14,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from bot.config import is_admin
+from bot.config import is_admin, QUALITY_OPTIONS, DEFAULT_QUALITY
 from bot.bilibili_api import get_auth_cookies, HEADERS
+from bot.database import get_user_settings, set_user_settings
 
 router = Router()
 router.message.filter(lambda msg: msg.from_user is not None and is_admin(msg.from_user.id))
@@ -25,6 +27,7 @@ def get_settings_main_kb():
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🔑 登录管理", callback_data="set_login_menu"))
     builder.row(types.InlineKeyboardButton(text="📋 订阅管理", callback_data="set_subs_list"))
+    builder.row(types.InlineKeyboardButton(text="🎨 默认画质", callback_data="set_quality_menu"))
     builder.row(types.InlineKeyboardButton(text="❌ 关闭菜单", callback_data="close_menu"))
     return builder.as_markup()
 
@@ -32,8 +35,15 @@ def get_settings_main_kb():
 @router.message(Command("settings"))
 async def cmd_settings(message: types.Message, state: FSMContext):
     await state.clear()
+    # 获取当前默认画质
+    settings = await get_user_settings(message.chat.id)
+    quality = settings.get("default_quality", DEFAULT_QUALITY) if settings else DEFAULT_QUALITY
+    quality_name = QUALITY_OPTIONS.get(quality, "最高画质")
+    
     await message.answer(
-        "⚙️ **机器人控制面板**\n请选择你需要管理的功能：",
+        f"⚙️ **机器人控制面板**\n"
+        f"🎨 当前默认画质: **{quality_name}**\n\n"
+        f"请选择你需要管理的功能：",
         reply_markup=get_settings_main_kb(),
         parse_mode="Markdown"
     )
@@ -48,11 +58,63 @@ async def cb_close_menu(callback: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "settings_main")
 async def cb_settings_main(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    # 获取当前默认画质
+    settings = await get_user_settings(callback.message.chat.id)
+    quality = settings.get("default_quality", DEFAULT_QUALITY) if settings else DEFAULT_QUALITY
+    quality_name = QUALITY_OPTIONS.get(quality, "最高画质")
+    
     await callback.message.edit_text(
-        "⚙️ **机器人控制面板**\n请选择你需要管理的功能：",
+        f"⚙️ **机器人控制面板**\n"
+        f"🎨 当前默认画质: **{quality_name}**\n\n"
+        f"请选择你需要管理的功能：",
         reply_markup=get_settings_main_kb(),
         parse_mode="Markdown"
     )
+
+
+# --- Quality Settings ---
+@router.callback_query(F.data == "set_quality_menu")
+async def cb_quality_menu(callback: types.CallbackQuery):
+    # 获取当前设置
+    settings = await get_user_settings(callback.message.chat.id)
+    current_quality = settings.get("default_quality", DEFAULT_QUALITY) if settings else DEFAULT_QUALITY
+    
+    builder = InlineKeyboardBuilder()
+    for qkey, qname in QUALITY_OPTIONS.items():
+        marker = " ✓" if qkey == current_quality else ""
+        builder.row(types.InlineKeyboardButton(
+            text=f"{qname}{marker}",
+            callback_data=f"set_quality_{qkey}"
+        ))
+    builder.row(types.InlineKeyboardButton(
+        text="🔙 返回主菜单",
+        callback_data="settings_main"
+    ))
+    
+    current_name = QUALITY_OPTIONS.get(current_quality, "最高画质")
+    await callback.message.edit_text(
+        f"🎨 **默认画质设置**\n\n"
+        f"当前: **{current_name}**\n\n"
+        f"选择后，下载时默认使用此画质。\n"
+        f"你仍可在每次下载时手动选择其他画质。",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("set_quality_"))
+async def cb_set_quality(callback: types.CallbackQuery):
+    quality = callback.data.replace("set_quality_", "")
+    if quality not in QUALITY_OPTIONS:
+        await callback.answer("无效的画质选项", show_alert=True)
+        return
+    
+    await set_user_settings(callback.message.chat.id, {"default_quality": quality})
+    quality_name = QUALITY_OPTIONS[quality]
+    await callback.answer(f"✅ 已设置默认画质为: {quality_name}", show_alert=False)
+    
+    # 刷新画质菜单
+    await cb_quality_menu(callback)
 
 
 # --- Login Menu ---
