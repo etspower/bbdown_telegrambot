@@ -164,9 +164,11 @@ class SubprocessExecutor:
                 
                 self._output_lines.append(line)
                 
-                # 调试：记录所有 BBDown 输出（帮助诊断画质选择问题）
-                if any(keyword in line.lower() for keyword in ["清晰度", "dfn", "quality", "resolution", "分辨率", "选择", "select"]):
-                    logger.info(f"📺 BBDown 画质信息: {line}")
+                # 调试：记录所有 BBDown 输出（帮助诊断进度问题）
+                # 先检查是否是进度相关行
+                has_progress_keywords = any(kw in line.lower() for kw in ["下载", "download", "%", "进度", "progress", "mbit", "mb/", "kb/"])
+                if has_progress_keywords:
+                    logger.info(f"📥 BBDown 输出: {line[:150]}")
                 
                 # 检查进度 - 即使没有百分比也 yield 进度更新（用于显示文件大小等）
                 match = PROGRESS_PATTERN.search(line)
@@ -189,9 +191,8 @@ class SubprocessExecutor:
                             else:
                                 size = f"{val:.2f} {unit}"
                         
-                        # 调试日志：记录解析到的进度信息
-                        if percentage > 0 or size or speed:
-                            logger.debug(f"Progress: {percentage:.1f}% | size={size} | speed={speed} | line={line[:80]}")
+                        # 调试日志：记录解析到的进度信息（使用 info 级别）
+                        logger.info(f"📊 进度解析: {percentage:.1f}% | size={size} | speed={speed}")
                         
                         yield ProgressUpdate(
                             percentage=percentage,
@@ -199,8 +200,8 @@ class SubprocessExecutor:
                             size=size,
                             speed=speed
                         )
-                    except ValueError:
-                        pass
+                    except ValueError as e:
+                        logger.debug(f"进度解析失败: {e} | line={line}")
     
     def _find_line_end(self, buffer: bytearray) -> int:
         """找到行结束符位置，兼容 \\n、\\r、\\r\\n"""
