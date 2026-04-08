@@ -464,6 +464,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 initial_size, _ = scan_downloading_files()
                 last_file_size = initial_size
                 last_progress_update = time.time()
+                scan_count = 0  # 扫描计数器
                 
                 async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
                     current_time = time.time()
@@ -484,7 +485,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     
                     # 每隔 1 秒扫描一次文件大小
                     if current_time - last_progress_update >= 1.0:
+                        scan_count += 1
                         current_file_size, found_files = scan_downloading_files()
+                        logger.info(f"🔍 扫描 #{scan_count}: dl_dir={dl_dir}, 文件数={len(found_files)}, 大小={current_file_size:.1f}MB")
                         
                         # 构建进度信息
                         if found_files:
