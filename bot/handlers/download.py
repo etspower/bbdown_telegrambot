@@ -386,10 +386,6 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             last_percentage = 0.0
             current_text = ""
             downloaded_size = 0  # MB
-            expected_total_size = 0.0  # 期望的总大小（MB）
-            last_known_size = 0.0  # 上次检查的文件大小
-            last_logged_size = 0.0  # 上次记录日志的大小
-            estimated_percentage = 0.0  # 基于文件大小的估计百分比
             
             async def update_progress(status: str, percentage: float = None, extra: str = ""):
                 """更新进度显示，3秒节流"""
@@ -431,100 +427,78 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 # 改进进度更新逻辑：更积极地更新，降低节流时间
                 min_update_interval = 1.5  # 降低到 1.5 秒
                 
-                # 查找可能正在下载的文件（.mp4, .m4a, .temp 等）
-                def get_downloading_file_size():
-                    """获取当前正在下载的文件总大小"""
+                # 查找正在下载的文件（视频和音频）
+                def scan_downloading_files():
+                    """扫描下载目录中的所有文件，返回总大小和文件列表"""
                     total_size = 0
                     found_files = []
-                    search_dirs = [dl_dir, dl_base, dl_base.parent]  # 也检查父目录
-                    for search_dir in search_dirs:
-                        if search_dir.exists():
-                            for f in search_dir.iterdir():
-                                if f.is_file() and (
-                                    f.suffix in ['.mp4', '.m4a', '.flv', '.temp', '.downloading'] or
-                                    '.download' in f.name or
-                                    f.name.endswith('.vit') or  # BBDown 可能使用这些扩展名
-                                    f.name.endswith('.aac')
-                                ):
-                                    try:
-                                        size_mb = f.stat().st_size / (1024 * 1024)
-                                        total_size += size_mb
-                                        found_files.append(f"{f.name}: {size_mb:.1f}MB")
-                                    except:
-                                        pass
-                    if found_files:
-                        logger.info(f"📁 检测到下载文件: {', '.join(found_files)}")
-                    return total_size
+                    
+                    # 检查下载目录及其子目录
+                    for search_dir in [dl_dir, dl_base]:
+                        if not search_dir.exists():
+                            continue
+                        for f in search_dir.rglob("*"):
+                            if f.is_file() and f.suffix.lower() not in ['.jpg', '.png', '.txt', '.log', '.json']:
+                                try:
+                                    size_mb = f.stat().st_size / (1024 * 1024)
+                                    total_size += size_mb
+                                    found_files.append(f"{f.name}: {size_mb:.1f}MB")
+                                except:
+                                    pass
+                    return total_size, found_files
+                
+                # 初始扫描，获取下载开始前的文件大小
+                initial_size, _ = scan_downloading_files()
+                last_file_size = initial_size
+                last_progress_update = time.time()
+                max_file_size_seen = initial_size  # 跟踪最大文件大小
                 
                 async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
-                    pct = progress.percentage
-                    line = progress.line or ""
-                    
-                    # 从 BBDown 输出获取预估总大小
-                    # 策略：BBDown 先列出音频流（<50MB），再列出视频流（>50MB）
-                    # 因此取第一个 > 80MB 的流作为视频大小估算
-                    if expected_total_size == 0:
-                        for out_line in executor._output_lines:
-                            size_match = re.search(r'([\d.]+)\s*MB', out_line, re.IGNORECASE)
-                            if size_match:
-                                size_mb = float(size_match.group(1))
-                                # 跳过音频流（通常 < 50MB），取第一个视频流（> 80MB）
-                                if size_mb > 80:
-                                    expected_total_size = size_mb
-                                    logger.info(f"📊 预估视频大小: {expected_total_size:.1f} MB")
-                                    break
-                    
-                    # 构建额外信息
-                    extra_parts = []
-                    
-                    # 如果没有从 BBDown 获取到百分比，尝试从文件大小估算
-                    if pct == 0 and expected_total_size > 0:
-                        current_file_size = get_downloading_file_size()
-                        if current_file_size > 0:
-                            if current_file_size > last_known_size:
-                                # 文件正在增长，估算进度
-                                estimated_percentage = min(99.0, (current_file_size / expected_total_size) * 100)
-                                last_known_size = current_file_size
-                                logger.info(f"📈 进度估算: {current_file_size:.1f}/{expected_total_size:.1f} MB = {estimated_percentage:.1f}%")
-                        else:
-                            if time.time() - last_update_time > 5:
-                                logger.info(f"🔍 搜索下载文件: dl_dir={dl_dir}, dl_base={dl_base}")
-                                current_file_size = get_downloading_file_size()
-                                logger.info(f"🔍 当前文件大小: {current_file_size:.1f} MB")
-                        
-                        if estimated_percentage > 0:
-                            extra_parts.append(f"📦 {current_file_size:.1f}/{expected_total_size:.1f} MB")
-                            pct = estimated_percentage
-                    
-                    if progress.size:
-                        extra_parts.append(f"📦 {progress.size}")
-                    if progress.speed:
-                        extra_parts.append(f"⚡ {progress.speed}")
-                    extra = " | ".join(extra_parts) if extra_parts else ""
-                    
-                    # 更新条件（满足任一即更新）：
-                    # 1. 进度变化 >= 2%
-                    # 2. 有额外信息且超过 min_update_interval 秒
-                    # 3. 进度达到 100%
                     current_time = time.time()
-                    time_since_update = current_time - last_update_time
                     
-                    should_update = (
-                        (pct > 0 and abs(pct - last_percentage) >= 2.0) or
-                        (extra and time_since_update >= min_update_interval) or
-                        pct >= 100.0
-                    )
+                    # 每隔 1 秒扫描一次文件大小
+                    if current_time - last_progress_update >= 1.0:
+                        current_file_size, found_files = scan_downloading_files()
+                        
+                        # 更新最大文件大小（用于计算进度）
+                        if current_file_size > max_file_size_seen:
+                            max_file_size_seen = current_file_size
+                        
+                        # 计算进度：
+                        # 策略：使用"增长速度估算"或"时间估算"
+                        # 这里我们用简单的方法：显示当前已下载大小
+                        # 如果检测到文件增长，就估算进度
+                        
+                        elapsed = current_time - download_start_time
+                        size_growth = current_file_size - initial_size
+                        
+                        # 构建进度信息
+                        if found_files:
+                            # 找到正在下载的文件，显示当前大小
+                            extra = f"📦 已下载: {current_file_size:.1f} MB"
+                            
+                            # 如果文件在增长，尝试估算进度
+                            if current_file_size > last_file_size and size_growth > 0:
+                                growth_rate = (current_file_size - last_file_size) / (current_time - last_progress_update)  # MB/s
+                                if growth_rate > 0:
+                                    extra += f" | ⚡ {growth_rate:.1f} MB/s"
+                            
+                            # 更新显示
+                            await update_progress("下载中", None, extra)
+                            if found_files and current_file_size > last_file_size + 1:  # 变化超过 1MB 才记录
+                                logger.info(f"📥 下载进度: {current_file_size:.1f} MB | 文件: {len(found_files)} 个")
+                        
+                        last_file_size = current_file_size
+                        last_progress_update = current_time
                     
-                    if should_update:
-                        if pct >= 100.0:
-                            await update_progress("🔄 封装处理中...", 100, extra)
-                        elif pct > 0:
-                            await update_progress("下载中", pct, extra)
-                            last_percentage = pct
-                        elif extra:
-                            # 即使没有百分比，也显示文件大小/速度信息
-                            await update_progress("下载中", 0, extra)
-                            last_update_time = current_time
+                    # 处理 BBDown 的进度输出（如果有百分比）
+                    pct = progress.percentage
+                    if pct > 0:
+                        extra = f"📦 {progress.size}" if progress.size else ""
+                        if progress.speed:
+                            extra += f" | ⚡ {progress.speed}"
+                        await update_progress("下载中", pct, extra)
+                        last_percentage = pct
                 
                 result = await executor.wait()
                 
