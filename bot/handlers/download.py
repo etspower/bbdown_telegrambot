@@ -435,6 +435,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 def get_downloading_file_size():
                     """获取当前正在下载的文件总大小"""
                     total_size = 0
+                    found_files = []
                     search_dirs = [dl_dir, dl_base, dl_base.parent]  # 也检查父目录
                     for search_dir in search_dirs:
                         if search_dir.exists():
@@ -446,9 +447,13 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                     f.name.endswith('.aac')
                                 ):
                                     try:
-                                        total_size += f.stat().st_size / (1024 * 1024)  # MB
+                                        size_mb = f.stat().st_size / (1024 * 1024)
+                                        total_size += size_mb
+                                        found_files.append(f"{f.name}: {size_mb:.1f}MB")
                                     except:
                                         pass
+                    if found_files:
+                        logger.info(f"📁 检测到下载文件: {', '.join(found_files)}")
                     return total_size
                 
                 async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
@@ -473,10 +478,17 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     # 如果没有从 BBDown 获取到百分比，尝试从文件大小估算
                     if pct == 0 and expected_total_size > 0:
                         current_file_size = get_downloading_file_size()
-                        if current_file_size > last_known_size:
-                            # 文件正在增长，估算进度
-                            estimated_percentage = min(99.0, (current_file_size / expected_total_size) * 100)
-                            last_known_size = current_file_size
+                        if current_file_size > 0:
+                            if current_file_size > last_known_size:
+                                # 文件正在增长，估算进度
+                                estimated_percentage = min(99.0, (current_file_size / expected_total_size) * 100)
+                                last_known_size = current_file_size
+                                logger.info(f"📈 进度估算: {current_file_size:.1f}/{expected_total_size:.1f} MB = {estimated_percentage:.1f}%")
+                        else:
+                            if time.time() - last_update_time > 5:
+                                logger.info(f"🔍 搜索下载文件: dl_dir={dl_dir}, dl_base={dl_base}")
+                                current_file_size = get_downloading_file_size()
+                                logger.info(f"🔍 当前文件大小: {current_file_size:.1f} MB")
                         
                         if estimated_percentage > 0:
                             extra_parts.append(f"📦 {current_file_size:.1f}/{expected_total_size:.1f} MB")
