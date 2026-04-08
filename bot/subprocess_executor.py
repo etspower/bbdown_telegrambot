@@ -274,7 +274,7 @@ class SubprocessExecutor:
             self._timed_out = True
         
         return ProcessResult(
-            return_code=self._process.returncode or -1,
+            return_code=self._process.returncode if self._process.returncode is not None else -1,
             output="\n".join(self._output_lines),
             timed_out=self._timed_out,
         )
