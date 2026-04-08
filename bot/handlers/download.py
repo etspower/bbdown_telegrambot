@@ -461,16 +461,17 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     line = progress.line or ""
                     
                     # 从 BBDown 输出获取预估总大小
-                    # 策略：取第一个合理的大小的流作为总估算（BBDown 通常按画质优先级输出）
+                    # 策略：BBDown 先列出音频流（<50MB），再列出视频流（>50MB）
+                    # 因此取第一个 > 80MB 的流作为视频大小估算
                     if expected_total_size == 0:
                         for out_line in executor._output_lines:
                             size_match = re.search(r'([\d.]+)\s*MB', out_line, re.IGNORECASE)
                             if size_match:
                                 size_mb = float(size_match.group(1))
-                                # 取第一个 > 30MB 的流作为总大小估算（通常是最优画质优先）
-                                if size_mb > 30:
+                                # 跳过音频流（通常 < 50MB），取第一个视频流（> 80MB）
+                                if size_mb > 80:
                                     expected_total_size = size_mb
-                                    logger.info(f"📊 预估总大小: {expected_total_size:.1f} MB")
+                                    logger.info(f"📊 预估视频大小: {expected_total_size:.1f} MB")
                                     break
                     
                     # 构建额外信息

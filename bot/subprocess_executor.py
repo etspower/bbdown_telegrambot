@@ -173,10 +173,12 @@ class SubprocessExecutor:
                 self._output_lines.append(line)
                 
                 # 调试：记录所有 BBDown 输出（帮助诊断进度问题）
-                # 先检查是否是进度相关行
                 has_progress_keywords = any(kw in line.lower() for kw in ["下载", "download", "%", "进度", "progress", "mbit", "mb/", "kb/", "frame=", "time=", "speed="])
                 if has_progress_keywords or any(kw in line for kw in ["开始下载P", "完毕", "合并", "失败"]):
                     logger.info(f"📥 BBDown 输出: {line[:150]}")
+                elif "mb" in line.lower() or "kb" in line.lower():
+                    # 临时：记录所有包含文件大小的行（帮助理解 BBDown 输出格式）
+                    logger.info(f"📐 BBDown 大小行: {line[:200]}")
                 
                 # 检查进度 - 即使没有百分比也 yield 进度更新（用于显示文件大小等）
                 match = PROGRESS_PATTERN.search(line)
