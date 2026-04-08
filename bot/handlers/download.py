@@ -460,17 +460,25 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     pct = progress.percentage
                     line = progress.line or ""
                     
-                    # 从 BBDown 输出中实时提取各流的总大小（累积所有合理大小的流）
-                    for out_line in executor._output_lines:
-                        size_match = re.search(r'([\d.]+)\s*MB', out_line, re.IGNORECASE)
-                        if size_match:
-                            size_mb = float(size_match.group(1))
-                            # 累加所有大于 5MB 的流（视频/音频，排除字幕/弹幕等小文件）
-                            if size_mb > 5.0:
-                                expected_total_size += size_mb
-                    if expected_total_size > 0 and last_logged_size != expected_total_size:
-                        logger.info(f"📊 期望总大小: {expected_total_size:.2f} MB")
-                        last_logged_size = expected_total_size
+                    # 从 BBDown 输出获取预估总大小
+                    # 策略：取第一个 > 50MB 的流（视频）和第一个 > 10MB 的流（音频）
+                    # 这样只计算选中的画质，不累加所有画质
+                    if expected_total_size == 0:
+                        video_size = 0
+                        audio_size = 0
+                        for out_line in executor._output_lines:
+                            size_match = re.search(r'([\d.]+)\s*MB', out_line, re.IGNORECASE)
+                            if size_match:
+                                size_mb = float(size_match.group(1))
+                                # 第一个大视频流（>50MB）
+                                if video_size == 0 and size_mb > 50:
+                                    video_size = size_mb
+                                # 第一个音频流（>10MB）
+                                elif audio_size == 0 and 10 < size_mb <= 50:
+                                    audio_size = size_mb
+                        expected_total_size = video_size + audio_size
+                        if expected_total_size > 0:
+                            logger.info(f"📊 预估总大小: {video_size:.1f}MB (视频) + {audio_size:.1f}MB (音频) = {expected_total_size:.1f}MB")
                     
                     # 构建额外信息
                     extra_parts = []
