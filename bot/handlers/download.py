@@ -426,11 +426,33 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 # 查找正在下载的文件（视频和音频）
                 def scan_downloading_files():
-                    """只扫描最大的单个文件（当前正在写入的活跃文件）"""
-                    largest_size = 0.0
-                    found_files = []
+                    """只统计原始分片文件（.m4s/.ts），排除合并后的最终文件"""
+                    # 第一步：只统计 BBDown 下载的原始分片
+                    fragment_size = 0.0
+                    found_fragments = []
                     
-                    # 检查下载目录及其子目录
+                    for search_dir in [dl_dir, dl_base]:
+                        if not search_dir.exists():
+                            continue
+                        for f in search_dir.rglob("*"):
+                            if not f.is_file():
+                                continue
+                            ext = f.suffix.lower()
+                            # 只统计原始分片文件，排除合并输出
+                            if ext in ['.m4s', '.ts']:
+                                try:
+                                    size_mb = f.stat().st_size / (1024 * 1024)
+                                    fragment_size += size_mb
+                                    found_fragments.append(f"{f.name}: {size_mb:.1f}MB")
+                                except:
+                                    pass
+                    
+                    # 如果找到分片文件，返回分片总和
+                    if found_fragments:
+                        return fragment_size, found_fragments
+                    
+                    # 第二步：分片已删除（合并阶段），回退到扫描最大文件
+                    all_files = []
                     for search_dir in [dl_dir, dl_base]:
                         if not search_dir.exists():
                             continue
@@ -438,12 +460,16 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             if f.is_file() and f.suffix.lower() not in ['.jpg', '.png', '.txt', '.log', '.json']:
                                 try:
                                     size_mb = f.stat().st_size / (1024 * 1024)
-                                    found_files.append(f"{f.name}: {size_mb:.1f}MB")
-                                    if size_mb > largest_size:
-                                        largest_size = size_mb
+                                    all_files.append((f.name, size_mb))
                                 except:
                                     pass
-                    return largest_size, found_files
+                    
+                    if all_files:
+                        all_files.sort(key=lambda x: x[1], reverse=True)
+                        largest = all_files[0][1]
+                        return largest, [f"{n}: {s:.1f}MB" for n, s in all_files]
+                    
+                    return 0.0, []
                 
                 # 从 BBDown 输出中解析实际选择的视频和音频大小
                 # 格式: [视频] [360P 流畅] [640x360] [AVC] [30.000] [346 kbps] [~8.95 MB]
