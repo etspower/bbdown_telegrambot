@@ -388,11 +388,15 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             downloaded_size = 0  # MB
             
             async def update_progress(status: str, percentage: float = None, extra: str = ""):
-                """更新进度显示，1秒节流"""
+                """更新进度显示，节流以避免刷屏"""
                 nonlocal last_update_time, current_text
                 current_time = time.time()
-                if current_time - last_update_time < 1.0 and not status.startswith(("✅", "❌", "☁️")):
-                    return
+                # 特殊状态不节流：成功/失败/上传；下载状态 0.5 秒节流；合并阶段不节流
+                is_special = status.startswith(("✅", "❌", "☁️"))
+                is_merging = "合并" in extra or current_phase == "merging"
+                if not is_special and not is_merging:
+                    if current_time - last_update_time < 0.5:
+                        return
                 
                 elapsed = current_time - download_start_time
                 elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
@@ -542,9 +546,8 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 last_file_size = 0
                                 continue
                             elif current_file_size == 0 and current_phase == "merging":
-                                # 合并阶段刚开始
-                                extra = f"🔄 合并音视频中... ({expected_total_size:.1f} MB)"
-                                await update_progress("下载中", 99, extra)
+                                # 合并阶段：即使文件被删除/合并，也要显示接近完成的进度
+                                await update_progress("下载中", 99, f"🔄 合并音视频中... ({expected_total_size:.1f} MB)")
                                 last_file_size = 0
                                 continue
                         
