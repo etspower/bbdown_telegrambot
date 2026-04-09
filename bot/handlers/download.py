@@ -417,15 +417,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     parse_mode="Markdown"
                 )
                 
-                # 使用统一的 SubprocessExecutor
-                executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
-                
                 # 构建完整的 BBDown 命令
                 bbdown_cmd = [BBDOWN_PATH] + current_cmd_args
                 logger.debug(f"🔧 执行命令: {' '.join(bbdown_cmd)}")
                 
-                # 改进进度更新逻辑：更积极地更新，降低节流时间
-                min_update_interval = 1.5  # 降低到 1.5 秒
+                # 改进进度更新逻辑：独立文件扫描任务
+                min_update_interval = 1.0  # 1秒刷新一次
                 
                 # 查找正在下载的文件（视频和音频）
                 def scan_downloading_files():
@@ -460,72 +457,91 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         return float(match.group(1))
                     return 0.0
                 
-                # 初始扫描，获取下载开始前的文件大小
+                # 初始扫描
                 initial_size, _ = scan_downloading_files()
                 last_file_size = initial_size
-                last_progress_update = time.time()
-                scan_count = 0  # 扫描计数器
+                download_active = True  # 标记下载是否进行中
+                expected_total_size = 0.0
                 
-                async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
-                    current_time = time.time()
-                    line = progress.line or ""
+                # ========== 核心修复：独立的文件扫描任务 ==========
+                # 问题：async for 只在 BBDown 输出时推进，如果 BBDown 下载时不输出，扫描就不会执行
+                # 解决：使用 asyncio.create_task 创建独立任务，每秒扫描一次
+                
+                async def file_scan_loop():
+                    """独立的文件扫描任务，不依赖 BBDown 输出"""
+                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate
                     
-                    # 解析实际选择的视频和音频大小
-                    if video_size_estimate == 0 and "[视频]" in line:
-                        video_size_estimate = parse_size_from_line(line)
-                        if video_size_estimate > 0:
-                            logger.info(f"📊 视频大小: {video_size_estimate:.1f} MB")
-                    if audio_size_estimate == 0 and "[音频]" in line:
-                        audio_size_estimate = parse_size_from_line(line)
-                        if audio_size_estimate > 0:
-                            logger.info(f"📊 音频大小: {audio_size_estimate:.1f} MB")
-                    
-                    # 计算预估总大小
-                    expected_total_size = video_size_estimate + audio_size_estimate
-                    
-                    # 每隔 1 秒扫描一次文件大小
-                    if current_time - last_progress_update >= 1.0:
-                        scan_count += 1
-                        current_file_size, found_files = scan_downloading_files()
-                        logger.info(f"🔍 扫描 #{scan_count}: dl_dir={dl_dir}, 文件数={len(found_files)}, 大小={current_file_size:.1f}MB")
+                    while download_active:
+                        await asyncio.sleep(1.0)
+                        if not download_active:
+                            break
                         
-                        # 构建进度信息
-                        if found_files:
-                            # 找到正在下载的文件，显示当前大小
-                            extra = f"📦 已下载: {current_file_size:.1f} MB"
-                            
-                            # 如果有预估大小，显示进度百分比
+                        current_file_size, found_files = scan_downloading_files()
+                        
+                        # 更新预估总大小
+                        expected_total_size = video_size_estimate + audio_size_estimate
+                        
+                        logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB")
+                        
+                        if found_files and current_file_size > 0:
+                            extra = f"📦 {current_file_size:.1f}"
                             if expected_total_size > 0:
                                 pct = min(99.0, (current_file_size / expected_total_size) * 100)
                                 extra = f"📦 {current_file_size:.1f}/{expected_total_size:.1f} MB ({pct:.0f}%)"
-                            elif video_size_estimate > 0 or audio_size_estimate > 0:
-                                # 至少有一个大小估算
-                                extra = f"📦 已下载: {current_file_size:.1f} MB (预估: {expected_total_size:.1f} MB)"
                             
                             # 计算下载速度
                             if current_file_size > last_file_size:
-                                growth_rate = (current_file_size - last_file_size) / (current_time - last_progress_update)
+                                growth_rate = current_file_size - last_file_size  # 每秒 MB
                                 if growth_rate > 0:
                                     extra += f" | ⚡ {growth_rate:.1f} MB/s"
                             
-                            # 更新显示
                             await update_progress("下载中", None, extra)
-                            if current_file_size > last_file_size + 0.5:  # 变化超过 0.5MB 才记录
-                                logger.info(f"📥 下载进度: {current_file_size:.1f} MB | 文件: {len(found_files)} 个")
+                            
+                            if current_file_size > last_file_size + 0.5:
+                                logger.info(f"📥 下载进度: {current_file_size:.1f} MB | {len(found_files)} 个文件")
                         
                         last_file_size = current_file_size
-                        last_progress_update = current_time
-                    
-                    # 处理 BBDown 的进度输出（如果有百分比）
-                    pct = progress.percentage
-                    if pct > 0:
-                        extra = f"📦 {progress.size}" if progress.size else ""
-                        if progress.speed:
-                            extra += f" | ⚡ {progress.speed}"
-                        await update_progress("下载中", pct, extra)
-                        last_percentage = pct
                 
-                result = await executor.wait()
+                # 创建文件扫描任务
+                executor = SubprocessExecutor(timeout=DEFAULT_DOWNLOAD_TIMEOUT)
+                scan_task = asyncio.create_task(file_scan_loop())
+                
+                try:
+                    # 构建完整的 BBDown 命令
+                    bbdown_cmd = [BBDOWN_PATH] + current_cmd_args
+                    logger.debug(f"🔧 执行命令: {' '.join(bbdown_cmd)}")
+                    
+                    async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):
+                        line = progress.line or ""
+                        
+                        # 解析实际选择的视频和音频大小
+                        if video_size_estimate == 0 and "[视频]" in line:
+                            video_size_estimate = parse_size_from_line(line)
+                            if video_size_estimate > 0:
+                                logger.info(f"📊 视频大小: {video_size_estimate:.1f} MB")
+                        if audio_size_estimate == 0 and "[音频]" in line:
+                            audio_size_estimate = parse_size_from_line(line)
+                            if audio_size_estimate > 0:
+                                logger.info(f"📊 音频大小: {audio_size_estimate:.1f} MB")
+                        
+                        # 处理 BBDown 的进度输出（如果有百分比）
+                        pct = progress.percentage
+                        if pct > 0:
+                            extra = f"📦 {progress.size}" if progress.size else ""
+                            if progress.speed:
+                                extra += f" | ⚡ {progress.speed}"
+                            await update_progress("下载中", pct, extra)
+                            last_percentage = pct
+                    
+                    result = await executor.wait()
+                finally:
+                    # 停止文件扫描任务
+                    download_active = False
+                    scan_task.cancel()
+                    try:
+                        await scan_task
+                    except asyncio.CancelledError:
+                        pass
                 
                 # 从 BBDown 输出中提取实际选择的画质信息
                 actual_quality = None
