@@ -81,7 +81,11 @@ SCHEDULER_MAX_PAGES = int(os.getenv("SCHEDULER_MAX_PAGES", "2"))
 _raw_data_dir = os.getenv("DATA_DIR", "").strip('"').strip("'")
 if _raw_data_dir:
     # 用户指定了路径，可能是相对或绝对路径
-    DATA_DIR = _raw_data_dir
+    # 相对路径基于项目根目录（bot/ 父目录）解析，确保绝对路径
+    _data_path = Path(_raw_data_dir)
+    if not _data_path.is_absolute():
+        _data_path = Path(__file__).parent.parent / _data_path
+    DATA_DIR = str(_data_path.resolve())
 else:
     # 默认：bot/../data（项目根目录下的 data）
     DATA_DIR = str(Path(__file__).parent.parent / "data")
