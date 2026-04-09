@@ -509,6 +509,8 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     """独立的文件扫描任务，不依赖 BBDown 输出"""
                     nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done
                     
+                    last_cumulative = 0.0  # 用于防止进度回退
+                    
                     while download_active:
                         await asyncio.sleep(1.0)
                         if not download_active:
@@ -538,15 +540,24 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         
                         if found_files and current_file_size > 0 and expected_total_size > 0:
                             # 根据阶段计算累计进度
+                            # 关键：音频阶段使用预估的视频大小 + 当前音频实际大小，确保进度不回退
                             if current_phase == "video":
                                 # 视频阶段：当前分片大小
                                 cumulative = current_file_size
                             elif current_phase == "audio":
-                                # 音频阶段：视频已完成 + 当前音频分片大小
+                                # 音频阶段：始终使用预估的视频大小 + 当前音频实际大小
+                                # 这样可以确保进度单调递增，不会因为视频分片被删除而回退
                                 cumulative = video_size_estimate + current_file_size
                             else:
                                 # 合并阶段：显示接近完成
                                 cumulative = expected_total_size * 0.99
+                            
+                            # 确保累计大小不低于之前的进度（防止回退）
+                            if 'last_cumulative' not in globals():
+                                last_cumulative = 0.0
+                            if cumulative < last_cumulative:
+                                cumulative = last_cumulative
+                            last_cumulative = cumulative
                             
                             pct = min(99.0, cumulative / expected_total_size * 100)
                             
