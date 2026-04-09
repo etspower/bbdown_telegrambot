@@ -1,33 +1,39 @@
-version: '3.8'
-
 services:
-  telegram-bot-api:
-    image: aiogram/telegram-bot-api:latest
-    container_name: bbdown-telegram-bot-api
+  # Telegram Bot API Server (Local Mode)
+  # Handles file uploads up to 4GB — required for sending downloaded videos
+  # Docs: https://github.com/tdlib/telegram-bot-api
+  telegram-api:
+    image: ghcr.io/tdlib/telegram-bot-api:latest
+    container_name: bbdown-telegram-api
     restart: unless-stopped
     environment:
       TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
-      TELEGRAM_LOCAL: 1
     volumes:
-      - telegram-bot-api-data:/var/lib/telegram-bot-api
+      - ./data/telegram-api:/var/lib/telegram-bot-api
     ports:
       - "8081:8081"
+    stop_grace_period: 10s
 
+  # BBDown Telegram Bot
   bbdown-bot:
     build: .
     container_name: bbdown-bot
     restart: unless-stopped
     depends_on:
-      - telegram-bot-api
+      telegram-api:
+        condition: service_healthy
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_ID=${ADMIN_ID}
-      - API_URL=http://telegram-bot-api:8081
+      - API_URL=http://telegram-api:8081
       - BBDOWN_PATH=/usr/local/bin/BBDown
-      - DATA_DIR=/data
+      # DATA_DIR auto-resolves to /app/data (project-root relative), no need to set here
     volumes:
-      - ./data:/data
-
-volumes:
-  telegram-bot-api-data:
+      - ./data/bot:/app/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://telegram-api:8081')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
