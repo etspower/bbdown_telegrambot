@@ -504,6 +504,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 # 阶段追踪：video -> audio -> merging
                 current_phase = "video"  # "video" | "audio" | "merging"
                 video_phase_done = False  # 视频分片下载是否完成
+                video_done_size = 0.0  # 视频阶段结束时的最终文件大小（固定基准）
                 
                 # ========== 核心修复：独立的文件扫描任务 ==========
                 # 问题：async for 只在 BBDown 输出时推进，如果 BBDown 下载时不输出，扫描就不会执行
@@ -511,7 +512,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 async def file_scan_loop():
                     """独立的文件扫描任务，不依赖 BBDown 输出"""
-                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done
+                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done, video_done_size
                     
                     last_cumulative = 0.0  # 用于防止进度回退
                     
@@ -525,7 +526,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         # 更新预估总大小
                         expected_total_size = video_size_estimate + audio_size_estimate
                         
-                        logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB, 阶段={current_phase}, video_done={video_phase_done}, video_est={video_size_estimate:.1f}MB")
+                        logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB, 阶段={current_phase}, video_done={video_phase_done}, video_est={video_size_estimate:.1f}MB, video_done_size={video_done_size:.1f}MB")
+                        
+                        # 【关键】检测视频阶段结束：当前是 audio 但还没记录 video_done_size
+                        if current_phase == "audio" and not video_phase_done and video_done_size == 0.0:
+                            video_done_size = last_file_size  # 用上一轮扫描的大小（视频阶段最后一次成功扫描）
+                            logger.info(f"🎯 记录 video_done_size={video_done_size:.1f}MB（视频阶段结束，基准固定）")
                         
                         # 处理空文件情况（音频刚开始时）
                         if expected_total_size > 0:
@@ -569,16 +575,15 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 # 合并阶段：显示接近完成
                                 cumulative = total_expected * 0.99
                             elif video_phase_done:
-                                # 视频已完成（正在下载音频），始终使用: 预估视频 + 当前文件
-                                # 这样可以确保进度单调递增，不会因为视频分片被删除而回退
-                                cumulative = video_size_estimate + current_file_size
+                                # 【关键修复】视频已完成（正在下载音频），使用 video_done_size 作为固定基准
+                                # 不再用 video_size_estimate（因为回退扫描可能找到.mp4导致数值暴涨）
+                                # audio_done_size 是视频阶段最后一次成功扫描到的文件总大小，是真实的已完成量
+                                cumulative = video_done_size + current_file_size
                             else:
                                 # video 阶段：当前文件大小
                                 cumulative = current_file_size
                             
                             # 确保累计大小不低于之前的进度（防止回退）
-                            if 'last_cumulative' not in globals():
-                                last_cumulative = 0.0
                             if cumulative < last_cumulative:
                                 logger.info(f"⚠️ 进度回退被阻止: {cumulative:.1f}MB -> {last_cumulative:.1f}MB")
                                 cumulative = last_cumulative
@@ -586,7 +591,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             
                             # 当 video_phase_done 生效时，日志确认
                             if video_phase_done and cumulative > 0:
-                                logger.info(f"🎯 音频阶段: video_est={video_size_estimate:.1f}MB + current={current_file_size:.1f}MB = cumulative={cumulative:.1f}MB ({cumulative/total_expected*100:.0f}%)")
+                                logger.info(f"🎯 音频阶段: video_done={video_done_size:.1f}MB + current={current_file_size:.1f}MB = cumulative={cumulative:.1f}MB ({cumulative/total_expected*100:.0f}%)")
                             
                             logger.debug(f"🔍 进度详情: phase={current_phase}, video_phase_done={video_phase_done}, cumulative={cumulative:.1f}MB, expected={total_expected:.1f}MB, pct={min(99.0, cumulative/total_expected*100):.0f}%")
                             
