@@ -490,13 +490,17 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 download_active = True  # 标记下载是否进行中
                 expected_total_size = 0.0
                 
+                # 阶段追踪：video -> audio -> merging
+                current_phase = "video"  # "video" | "audio" | "merging"
+                video_phase_done = False  # 视频分片下载是否完成
+                
                 # ========== 核心修复：独立的文件扫描任务 ==========
                 # 问题：async for 只在 BBDown 输出时推进，如果 BBDown 下载时不输出，扫描就不会执行
                 # 解决：使用 asyncio.create_task 创建独立任务，每秒扫描一次
                 
                 async def file_scan_loop():
                     """独立的文件扫描任务，不依赖 BBDown 输出"""
-                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate
+                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done
                     
                     while download_active:
                         await asyncio.sleep(1.0)
@@ -508,13 +512,27 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         # 更新预估总大小
                         expected_total_size = video_size_estimate + audio_size_estimate
                         
-                        logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB")
+                        logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB, 阶段={current_phase}")
                         
-                        if found_files and current_file_size > 0:
-                            extra = f"📦 {current_file_size:.1f}"
-                            if expected_total_size > 0:
-                                pct = min(99.0, (current_file_size / expected_total_size) * 100)
-                                extra = f"📦 {current_file_size:.1f}/{expected_total_size:.1f} MB ({pct:.0f}%)"
+                        if found_files and current_file_size > 0 and expected_total_size > 0:
+                            # 根据阶段计算累计进度
+                            if current_phase == "video":
+                                # 视频阶段：当前分片大小
+                                cumulative = current_file_size
+                            elif current_phase == "audio":
+                                # 音频阶段：视频已完成 + 当前音频分片大小
+                                cumulative = video_size_estimate + current_file_size
+                            else:
+                                # 合并阶段：显示接近完成
+                                cumulative = expected_total_size * 0.99
+                            
+                            pct = min(99.0, cumulative / expected_total_size * 100)
+                            
+                            # 构建显示文本
+                            if current_phase == "merging":
+                                extra = f"🔄 合并音视频中... ({expected_total_size:.1f} MB)"
+                            else:
+                                extra = f"📦 {cumulative:.1f}/{expected_total_size:.1f} MB ({pct:.0f}%)"
                             
                             # 计算下载速度
                             if current_file_size > last_file_size:
@@ -522,10 +540,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 if growth_rate > 0:
                                     extra += f" | ⚡ {growth_rate:.1f} MB/s"
                             
-                            await update_progress("下载中", None, extra)
+                            await update_progress("下载中", pct, extra)
                             
                             if current_file_size > last_file_size + 0.5:
-                                logger.info(f"📥 下载进度: {current_file_size:.1f} MB | {len(found_files)} 个文件")
+                                logger.info(f"📥 下载进度: {cumulative:.1f}/{expected_total_size:.1f} MB ({pct:.0f}%) | {len(found_files)} 个文件")
                         
                         last_file_size = current_file_size
                 
@@ -550,6 +568,16 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             audio_size_estimate = parse_size_from_line(line)
                             if audio_size_estimate > 0:
                                 logger.info(f"📊 音频大小: {audio_size_estimate:.1f} MB")
+                        
+                        # 监听 BBDown 输出判断当前阶段
+                        if "合并" in line or "开始合并" in line:
+                            current_phase = "merging"
+                            logger.info(f"🔄 进入合并阶段")
+                        elif "音频" in line and ("下载" in line or "开始" in line):
+                            if current_phase == "video" and not video_phase_done:
+                                video_phase_done = True
+                            current_phase = "audio"
+                            logger.info(f"🎵 进入音频阶段")
                         
                         # 处理 BBDown 的进度输出（如果有百分比）
                         pct = progress.percentage
