@@ -388,10 +388,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             downloaded_size = 0  # MB
             
             async def update_progress(status: str, percentage: float = None, extra: str = ""):
-                """更新进度显示，3秒节流"""
+                """更新进度显示，1秒节流"""
                 nonlocal last_update_time, current_text
                 current_time = time.time()
-                if current_time - last_update_time < 2.0 and not status.startswith(("✅", "❌", "☁️")):
+                if current_time - last_update_time < 1.0 and not status.startswith(("✅", "❌", "☁️")):
                     return
                 
                 elapsed = current_time - download_start_time
