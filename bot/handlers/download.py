@@ -426,8 +426,8 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 # 查找正在下载的文件（视频和音频）
                 def scan_downloading_files():
-                    """扫描下载目录中的所有文件，返回总大小和文件列表"""
-                    total_size = 0
+                    """只扫描最大的单个文件（当前正在写入的活跃文件）"""
+                    largest_size = 0.0
                     found_files = []
                     
                     # 检查下载目录及其子目录
@@ -438,11 +438,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             if f.is_file() and f.suffix.lower() not in ['.jpg', '.png', '.txt', '.log', '.json']:
                                 try:
                                     size_mb = f.stat().st_size / (1024 * 1024)
-                                    total_size += size_mb
                                     found_files.append(f"{f.name}: {size_mb:.1f}MB")
+                                    if size_mb > largest_size:
+                                        largest_size = size_mb
                                 except:
                                     pass
-                    return total_size, found_files
+                    return largest_size, found_files
                 
                 # 从 BBDown 输出中解析实际选择的视频和音频大小
                 # 格式: [视频] [360P 流畅] [640x360] [AVC] [30.000] [346 kbps] [~8.95 MB]
