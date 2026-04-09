@@ -551,6 +551,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         if found_files and current_file_size > 0 and expected_total_size > 0:
                             # 根据阶段计算累计进度
                             # 关键：音频阶段使用预估的视频大小 + 当前音频实际大小，确保进度不回退
+                            logger.debug(f"🔍 进度计算: phase={current_phase}, video_est={video_size_estimate}, audio_est={audio_size_estimate}, current_size={current_file_size}")
                             if current_phase == "video":
                                 # 视频阶段：当前分片大小
                                 cumulative = current_file_size
@@ -620,7 +621,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                             if current_phase == "video" and not video_phase_done:
                                 video_phase_done = True
                             current_phase = "audio"
-                            logger.info(f"🎵 进入音频阶段")
+                            logger.info(f"🎵 进入音频阶段: video_size_est={video_size_estimate}, current_file_size will be scanned soon")
                         
                         # 处理 BBDown 的进度输出（如果有百分比）
                         pct = progress.percentage
