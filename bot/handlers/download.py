@@ -380,10 +380,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
             current_cmd_args = cmd_args.copy()
             current_cmd_args.extend(["-p", str(p), "--work-dir", str(dl_dir.absolute())])
             
-            # 进度状态
+            # 进度状态 - last_update_time=0 确保第一次立即显示
             download_start_time = time.time()
-            last_update_time = time.time()
-            last_percentage = 0.0
+            last_update_time = -100.0  # 改为负数确保第一次进度立即显示
+            last_percentage = -1.0  # 改为-1确保0%也能触发
             current_text = ""
             downloaded_size = 0  # MB
             
