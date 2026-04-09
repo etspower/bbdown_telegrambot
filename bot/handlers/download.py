@@ -527,7 +527,11 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         if expected_total_size > 0:
                             if current_file_size == 0 and current_phase == "audio":
                                 # 音频刚开始下载，还未写入文件
-                                extra = f"🎵 音频下载中... ({audio_size_estimate:.1f} MB)"
+                                # 使用预估的视频大小保持进度显示，避免回退
+                                if video_size_estimate > 0:
+                                    extra = f"📦 {video_size_estimate:.1f}/{expected_total_size:.1f} MB ({video_size_estimate/expected_total_size*100:.0f}%) | 🎵 音频下载中..."
+                                else:
+                                    extra = f"🎵 音频下载中... ({audio_size_estimate:.1f} MB)"
                                 await update_progress("下载中", None, extra)
                                 last_file_size = 0
                                 continue
@@ -535,6 +539,12 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 # 视频刚开始下载，还未写入文件
                                 extra = f"📹 视频下载中... ({video_size_estimate:.1f} MB)"
                                 await update_progress("下载中", None, extra)
+                                last_file_size = 0
+                                continue
+                            elif current_file_size == 0 and current_phase == "merging":
+                                # 合并阶段刚开始
+                                extra = f"🔄 合并音视频中... ({expected_total_size:.1f} MB)"
+                                await update_progress("下载中", 99, extra)
                                 last_file_size = 0
                                 continue
                         
