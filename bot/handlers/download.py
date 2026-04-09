@@ -549,19 +549,29 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 continue
                         
                         if found_files and current_file_size > 0 and expected_total_size > 0:
-                            # 根据阶段计算累计进度
-                            # 关键：音频阶段使用预估的视频大小 + 当前音频实际大小，确保进度不回退
-                            logger.debug(f"🔍 进度计算: phase={current_phase}, video_est={video_size_estimate}, audio_est={audio_size_estimate}, current_size={current_file_size}")
-                            if current_phase == "video":
-                                # 视频阶段：当前分片大小
-                                cumulative = current_file_size
-                            elif current_phase == "audio":
-                                # 音频阶段：始终使用预估的视频大小 + 当前音频实际大小
+                            # 【关键修复】始终使用预估的视频+音频大小作为分母
+                            # 分子根据阶段决定：
+                            # - video: 当前文件大小
+                            # - audio: 预估视频大小 + 当前音频大小
+                            # - merging: 预估总大小 (接近完成)
+                            # 
+                            # 同时，如果上一个阶段是video且文件数从多变少（说明进入下一阶段），
+                            # 保持使用预估的视频大小作为基数
+                            
+                            # 使用预估的完整大小作为分母
+                            total_expected = expected_total_size  # 视频+音频预估
+                            
+                            # 确定当前阶段的累计进度
+                            if current_phase == "merging":
+                                # 合并阶段：显示接近完成
+                                cumulative = total_expected * 0.99
+                            elif video_phase_done:
+                                # 视频已完成（正在下载音频），始终使用: 预估视频 + 当前文件
                                 # 这样可以确保进度单调递增，不会因为视频分片被删除而回退
                                 cumulative = video_size_estimate + current_file_size
                             else:
-                                # 合并阶段：显示接近完成
-                                cumulative = expected_total_size * 0.99
+                                # video 阶段：当前文件大小
+                                cumulative = current_file_size
                             
                             # 确保累计大小不低于之前的进度（防止回退）
                             if 'last_cumulative' not in globals():
@@ -570,7 +580,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 cumulative = last_cumulative
                             last_cumulative = cumulative
                             
-                            pct = min(99.0, cumulative / expected_total_size * 100)
+                            logger.debug(f"🔍 进度详情: phase={current_phase}, video_phase_done={video_phase_done}, cumulative={cumulative:.1f}MB, expected={total_expected:.1f}MB, pct={min(99.0, cumulative/total_expected*100):.0f}%")
+                            
+                            pct = min(99.0, cumulative / total_expected * 100)
                             
                             # 构建显示文本
                             if current_phase == "merging":
