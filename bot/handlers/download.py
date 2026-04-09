@@ -451,18 +451,25 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     if found_fragments:
                         return fragment_size, found_fragments
                     
-                    # 第二步：分片已删除（合并阶段），回退到扫描最大文件
+                    # 第二步：分片已删除（合并阶段或音频下载期间），回退到扫描最大文件
+                    # 但要排除已完成的大文件（视频合并完成后的mp4）
                     all_files = []
+                    exclude_names = {'.mp4', '.flv', '.mkv', '.avi'}
                     for search_dir in [dl_dir, dl_base]:
                         if not search_dir.exists():
                             continue
                         for f in search_dir.rglob("*"):
-                            if f.is_file() and f.suffix.lower() not in ['.jpg', '.png', '.txt', '.log', '.json']:
-                                try:
-                                    size_mb = f.stat().st_size / (1024 * 1024)
-                                    all_files.append((f.name, size_mb))
-                                except:
-                                    pass
+                            if f.is_file():
+                                ext = f.suffix.lower()
+                                # 排除已完成的大文件（这些是合并产物）
+                                if ext in exclude_names and f.stat().st_size > 1024 * 1024 * 10:  # > 10MB
+                                    continue
+                                if ext not in ['.jpg', '.png', '.txt', '.log', '.json']:
+                                    try:
+                                        size_mb = f.stat().st_size / (1024 * 1024)
+                                        all_files.append((f.name, size_mb))
+                                    except:
+                                        pass
                     
                     if all_files:
                         all_files.sort(key=lambda x: x[1], reverse=True)
@@ -513,6 +520,21 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         expected_total_size = video_size_estimate + audio_size_estimate
                         
                         logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB, 阶段={current_phase}")
+                        
+                        # 处理空文件情况（音频刚开始时）
+                        if expected_total_size > 0:
+                            if current_file_size == 0 and current_phase == "audio":
+                                # 音频刚开始下载，还未写入文件
+                                extra = f"🎵 音频下载中... ({audio_size_estimate:.1f} MB)"
+                                await update_progress("下载中", None, extra)
+                                last_file_size = 0
+                                continue
+                            elif current_file_size == 0 and current_phase == "video" and video_size_estimate > 0:
+                                # 视频刚开始下载，还未写入文件
+                                extra = f"📹 视频下载中... ({video_size_estimate:.1f} MB)"
+                                await update_progress("下载中", None, extra)
+                                last_file_size = 0
+                                continue
                         
                         if found_files and current_file_size > 0 and expected_total_size > 0:
                             # 根据阶段计算累计进度
