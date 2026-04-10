@@ -25,7 +25,7 @@ from bot.handlers import router as handlers_router
 from bot.scheduler import check_subscriptions
 from bot.database import init_db
 
-# ── 日志系统初始化 ──────────────────────────────────────────────────────────
+# ── 日志系统初始化 ────────────────────────────────────────────────────────
 LOG_DIR = Path(DATA_DIR) / "logs"
 try:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,14 +52,14 @@ root_logger.addHandler(file_handler)
 logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
 
-# ── 工具函数：将项目根加入 sys.path ───────────────────────────────────────
+
 def _ensure_project_in_path():
     root = str(Path(__file__).parent.parent)
     if root not in sys.path:
         sys.path.insert(0, root)
 
 
-# ── Bot 初始化 ──────────────────────────────────────────────────────────────
+# ── Bot 初始化 ────────────────────────────────────────────────────────────
 if API_URL and API_URL != "https://api.telegram.org":
     session = AiohttpSession(api=TelegramAPIServer.from_base(API_URL))
     bot = Bot(token=BOT_TOKEN, session=session)
@@ -91,7 +91,6 @@ async def cmd_login(message: types.Message):
     login_tmp_dir = os.path.join(DATA_DIR, f"tmp_login_{message.from_user.id}_{uuid.uuid4().hex[:8]}")
     os.makedirs(login_tmp_dir, exist_ok=True)
 
-    # 如果配置的路径不存在，尝试自动查找 / 重新安装
     if not os.path.exists(bbdown_path):
         _ensure_project_in_path()
         try:
@@ -102,13 +101,7 @@ async def cmd_login(message: types.Message):
 
         if not resolved:
             await status_msg.edit_text(
-                "❌ BBDown 未找到且自动安装失败！\n"
-                "请手动安装：\n"
-                "```bash\n"
-                "wget https://github.com/nilaoda/BBDown/releases/latest/download/BBDown_linux-x64.zip \\\ \n"
-                "  -O /tmp/bb.zip && unzip /tmp/bb.zip -d /tmp/bb\n"
-                "sudo mv /tmp/bb/BBDown /usr/local/bin/BBDown && sudo chmod +x /usr/local/bin/BBDown\n"
-                "```"
+                "❌ BBDown 未找到且自动安装失败！\n请参考项目 README 手动安装。"
             )
             _cleanup_login_dir(login_tmp_dir)
             return
@@ -228,11 +221,19 @@ async def main():
 
     _ensure_project_in_path()
 
-    # ── 自动安装 BBDown ──
-    logger.info("🔍 检查 BBDown 安装情况...")
     try:
-        from start_api import ensure_bbdown_installed
+        from start_api import ensure_bbdown_installed, ensure_ffmpeg_installed
         import bot.config as config
+
+        # ── 检查 / 安装 ffmpeg ──
+        logger.info("🔍 检查 ffmpeg 安装情况...")
+        if not ensure_ffmpeg_installed():
+            logger.warning(
+                "⚠️  ffmpeg 未找到且自动安装失败！视频合并功能可能不可用。\n"
+                "   请手动安装： sudo apt-get install -y ffmpeg"
+            )
+        # ── 检查 / 安装 BBDown ──
+        logger.info("🔍 检查 BBDown 安装情况...")
         bbdown_path = ensure_bbdown_installed()
         if bbdown_path:
             config.BBDOWN_PATH = bbdown_path
@@ -240,11 +241,11 @@ async def main():
         else:
             logger.critical(
                 "❌ BBDown 未找到且自动安装失败！\n"
-                "请手动安装后再启动，或在 .env 中设置 BBDOWN_PATH=正确路径。"
+                "请手动安装后再启动。"
             )
             sys.exit(1)
     except ImportError as e:
-        logger.warning(f"无法导入 start_api.py，跳过 BBDown 自动安装：{e}")
+        logger.warning(f"无法导入 start_api.py，跳过自动安装：{e}")
 
     # ── 自动启动本地 telegram-bot-api ──
     if API_URL and ("localhost" in API_URL or "127.0.0.1" in API_URL):
@@ -254,14 +255,13 @@ async def main():
             if not ensure_api_running():
                 logger.critical(
                     "❌ 无法启动 telegram-bot-api，Bot 无法连接。\n"
-                    "请确保 Docker 已安装且可用，或将 .env 中 API_URL 清空以使用官方服务器。"
+                    "请确保 Docker 已安装且可用，或将 .env 中 API_URL 清空。"
                 )
                 sys.exit(1)
         except ImportError as e:
             logger.critical(f"❌ 无法导入 start_api.py：{e}")
             sys.exit(1)
 
-    # 清理上次残留的下载目录
     downloads_dir = Path(DATA_DIR) / "downloads"
     if downloads_dir.exists():
         shutil.rmtree(downloads_dir, ignore_errors=True)
