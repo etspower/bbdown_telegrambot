@@ -154,6 +154,25 @@ bbdown_telegrambot/
 **Q: 二维码扫描后仍然提示未登录？**
 登录凭证保存在 `data/BBDown.data`。重新扫码会覆盖旧凭证。确认容器对该文件有写权限。
 
+**Q: Docker 构建时卡住，报 `Could not resolve deb.debian.org`？**
+服务器 DNS 解析失败（Oracle Cloud 等云平台常见）。先试：
+
+```bash
+# 方法 1：给 Docker 配置 Google DNS
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{"dns": ["8.8.8.8", "8.8.4.4"]}
+EOF
+sudo systemctl restart docker
+docker compose up -d --build
+```
+
+```bash
+# 方法 2：放行 iptables FORWARD（Oracle Cloud）
+sudo iptables -P FORWARD ACCEPT
+docker compose up -d --build
+```
+
 **Q: 多 P 下载如何指定范围？**
 发送链接后按提示按钮选择，或直接输入 `1-3,5,7`（下载第 1-3 P 和第 5、7 P）。
 

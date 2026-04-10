@@ -1,40 +1,36 @@
-# BBDown Telegram Bot - Dockerfile
-# Multi-stage: build deps, then minimal runtime image
+# BBDown Telegram Bot
 FROM python:3.12-slim
 
-SHELL ["/bin/bash", "-c"]
+WORKDIR /app
 
-# Install system deps + ffmpeg + BBDown in one layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        wget \
-        unzip \
-        curl \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    # BBDown (latest release)
-    && wget -q https://github.com/nilaoda/BBDown/releases/latest/download/BBDown_1.6.4_20241207_linux-x64.zip -O /tmp/bbdown.zip \
+# Step 1: Download BBDown (GitHub is usually reachable even when Debian mirrors fail)
+RUN wget -q https://github.com/nilaoda/BBDown/releases/download/1.6.3/BBDown_1.6.3_20240814_linux-x64.zip \
+        -O /tmp/bbdown.zip \
     && unzip -o /tmp/bbdown.zip -d /tmp/bbdown \
     && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown \
     && chmod +x /usr/local/bin/BBDown \
     && rm -rf /tmp/bbdown.zip /tmp/bbdown \
     && BBDown --version
 
-WORKDIR /app
+# Step 2: Install ffmpeg (fall back to Aliyun mirror if deb.debian.org is unreachable)
+RUN if command -v apt-get &>/dev/null; then \
+        # Try Aliyun mirror first for CN servers
+        echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free" > /etc/apt/sources.list \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends ffmpeg \
+        && rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "Warning: apt-get unavailable"; \
+    fi
 
-# Install Python deps
+# Step 3: Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot source
+# Step 4: Bot source
 COPY bot/ ./bot/
 
-# DATA_DIR defaults to /app/data automatically (config.py resolves from project root)
-# No ENV DATA_DIR needed — relative paths in config.py now resolve correctly.
-
-EXPOSE 8081
-
-# Run as non-root user for security
+# Run as non-root user
 RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
 USER botuser
 
