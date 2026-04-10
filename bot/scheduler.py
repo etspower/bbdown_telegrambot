@@ -19,7 +19,7 @@ from bot.database import (
     update_video_title,
 )
 from bot.bilibili_api import get_up_videos
-from bot.config import BBDOWN_PATH, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MAX_PAGES
+from bot.config import get_bbdown_path, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULER_MAX_PAGES
 from bot.subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
 )
@@ -107,7 +107,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
 
     try:
         async for progress in executor.run_with_progress(
-            [BBDOWN_PATH, video_url, "--work-dir", str(dl_dir)],
+            [get_bbdown_path(), video_url, "--work-dir", str(dl_dir)],
             DATA_DIR
         ):
             now = asyncio.get_running_loop().time()

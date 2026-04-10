@@ -172,6 +172,31 @@ BBDOWN_EXTRA_ARGS=
 
 ## ❓ 常见问题
 
+**Q: 运行时提示 `No such file or directory: '/usr/local/bin/BBDown'`？**  
+BBDown 必须在运行环境中安装并可被找到。安装方式取决于你的部署方式：
+
+**方式一：宿主机直接运行（不用 Docker）**
+```bash
+# Linux/macOS - 下载并安装
+wget https://github.com/nilaoda/BBDown/releases/download/1.6.3/BBDown_1.6.3_20240814_linux-x64.zip
+unzip BBDown_1.6.3_20240814_linux-x64.zip
+sudo mv BBDown /usr/local/bin/
+sudo chmod +x /usr/local/bin/BBDown
+BBDown --version
+```
+
+**方式二：Docker 部署**  
+BBDown 在构建镜像时已自动安装到 `/usr/local/bin/BBDown`，无需手动操作。确认 `.env` 中的 `BBDOWN_PATH` 未被手动覆盖。
+
+**手动指定路径（可选）**  
+在 `.env` 中设置：
+```
+BBDOWN_PATH=/your/custom/path/BBDown
+```
+路径支持绝对路径、相对路径（相对于项目根目录）或纯文件名（从 PATH 查找）。
+
+---
+
 **Q: 机器人回复"解析失败"？**  
 检查服务器日志：`docker compose logs bbdown-bot` — 真实 BBDown 错误会记录在 `data/logs/bot.log`。
 

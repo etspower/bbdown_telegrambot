@@ -166,7 +166,7 @@ class SubprocessExecutor:
                     continue
                 
                 try:
-                    line = line_bytes.decode('utf-8').strip()
+                    line = line_bytes.decode('utf-8', errors='replace').strip()
                 except UnicodeDecodeError:
                     line = line_bytes.decode('gbk', errors='ignore').strip()
                 

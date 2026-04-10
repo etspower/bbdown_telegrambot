@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 from bot.config import (
-    BBDOWN_PATH, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT,
+    get_bbdown_path, DATA_DIR, is_admin, VIDEO_EXT, AUDIO_EXT,
     QUALITY_OPTIONS, QUALITY_PRIORITY, DEFAULT_QUALITY
 )
 from bot.subprocess_executor import (
@@ -87,7 +87,7 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
         await status_msg.edit_text(
             f"❌ **解析失败：BBDown 未安装或路径错误**\n\n"
             f"请检查服务器上 BBDown 是否正确安装，环境变量是否配置。\n"
-            f"当前配置路径: `{BBDOWN_PATH}`",
+            f"当前配置路径: `{get_bbdown_path()}`",
             parse_mode="Markdown"
         )
         return
@@ -109,7 +109,7 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
             result = await run_bbdown_simple([url, "--only-show-info"], DATA_DIR, timeout=30)
             error_detail = result.output[:300] if result.output else "无详细错误信息"
         except FileNotFoundError:
-            error_detail = f"BBDown 可执行文件未找到: {BBDOWN_PATH}"
+            error_detail = f"BBDown 可执行文件未找到: {get_bbdown_path()}"
         except Exception:
             error_detail = "(无法获取详细错误信息)"
         
@@ -123,7 +123,7 @@ async def trigger_download_selection(message: types.Message, state: FSMContext, 
         elif "不存在" in error_detail or "deleted" in error_detail.lower():
             error_hint = "🗑️ **可能原因：视频已删除**\n该视频可能已被 UP 主删除。"
         elif "未找到" in error_detail or "not found" in error_detail.lower():
-            error_hint = f"❌ **BBDown 未安装**\n路径: `{BBDOWN_PATH}`"
+            error_hint = f"❌ **BBDown 未安装**\n路径: `{get_bbdown_path()}`"
         else:
             error_hint = f"```\n{error_detail}\n```"
         
@@ -358,7 +358,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
     
     # 调试：打印完整的 BBDown 命令（包含所有参数）
     cmd_str = ' '.join(str(x) for x in cmd_args)
-    logger.info(f"🔧 BBDown 完整命令: {BBDOWN_PATH} {cmd_str}")
+    logger.info(f"🔧 BBDown 完整命令: {get_bbdown_path()} {cmd_str}")
     logger.info(f"🔧 cmd_args 列表: {cmd_args}")
     
     # 使用 URL hash 作为下载目录标识
@@ -422,7 +422,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 )
                 
                 # 构建完整的 BBDown 命令
-                bbdown_cmd = [BBDOWN_PATH] + current_cmd_args
+                bbdown_cmd = [get_bbdown_path()] + current_cmd_args
                 logger.debug(f"🔧 执行命令: {' '.join(bbdown_cmd)}")
                 
                 # 改进进度更新逻辑：独立文件扫描任务
@@ -622,7 +622,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 try:
                     # 构建完整的 BBDown 命令
-                    bbdown_cmd = [BBDOWN_PATH] + current_cmd_args
+                    bbdown_cmd = [get_bbdown_path()] + current_cmd_args
                     logger.debug(f"🔧 执行命令: {' '.join(bbdown_cmd)}")
                     
                     async for progress in executor.run_with_progress(bbdown_cmd, DATA_DIR):

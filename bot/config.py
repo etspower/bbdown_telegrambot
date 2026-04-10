@@ -46,32 +46,33 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip('"').strip("'"))
 # 1. 绝对路径: /usr/local/bin/BBDown 或 /home/user/bbdown/BBDown
 # 2. 相对路径（相对于项目根目录）: tools/BBDown
 # 3. 仅文件名（依赖 PATH）: BBDown
-_raw_bbdown_path = os.getenv("BBDOWN_PATH", "BBDown").strip('"').strip("'")
+def get_bbdown_path() -> str:
+    """动态获取 BBDown 路径，每次调用时重新解析。
 
-# 检查是否是 PATH 中的命令（不带路径分隔符）
-if os.path.sep not in _raw_bbdown_path and "/" not in _raw_bbdown_path and "\\" not in _raw_bbdown_path:
-    # 仅文件名，尝试在 PATH 中查找
-    bbdown_in_path = shutil.which(_raw_bbdown_path)
-    if bbdown_in_path:
-        BBDOWN_PATH = bbdown_in_path
-        logger.debug(f"Found BBDown in PATH: {BBDOWN_PATH}")
-    else:
-        # 不在 PATH 中，保持原值（后续会在项目根目录下查找 tools/BBDown）
-        _fallback_path = _project_root / "tools" / _raw_bbdown_path
-        if _fallback_path.exists():
-            BBDOWN_PATH = str(_fallback_path)
-            logger.debug(f"Using fallback BBDown at: {BBDOWN_PATH}")
-        else:
-            BBDOWN_PATH = _raw_bbdown_path
-            logger.debug(f"BBDown path not resolved, using: {BBDOWN_PATH}")
-else:
-    # 用户指定了路径，可能是绝对或相对路径
-    if os.path.isabs(_raw_bbdown_path):
-        BBDOWN_PATH = _raw_bbdown_path
-    else:
-        # 相对路径，相对于项目根目录解析
-        BBDOWN_PATH = str(_project_root / _raw_bbdown_path)
-    logger.debug(f"Using specified BBDown path: {BBDOWN_PATH}")
+    支持三种形式的环境变量 BBDOWN_PATH：
+    1. 纯文件名（无路径分隔符）：优先从 PATH 查找，再查 tools/BBDown
+    2. 绝对路径：直接返回
+    3. 相对路径：相对于项目根目录解析
+    """
+    raw = os.getenv("BBDOWN_PATH", "BBDown").strip('"').strip("'")
+    # 1. 纯文件名 -> PATH 查找
+    if os.path.sep not in raw and "/" not in raw and "\\" not in raw:
+        found = shutil.which(raw)
+        if found:
+            return found
+        fallback = Path(__file__).parent.parent / "tools" / raw
+        if fallback.exists():
+            return str(fallback)
+        return raw
+    # 2. 绝对路径
+    if os.path.isabs(raw):
+        return raw
+    # 3. 相对路径 -> 相对项目根目录
+    return str(Path(__file__).parent.parent / raw)
+
+
+# 向后兼容：模块级变量（首次导入时缓存）
+BBDOWN_PATH = get_bbdown_path()
 
 API_URL = os.getenv("API_URL", "https://api.telegram.org").strip('"').strip("'")
 SCHEDULER_MAX_PAGES = int(os.getenv("SCHEDULER_MAX_PAGES", "2"))
