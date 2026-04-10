@@ -3,7 +3,7 @@ services:
   # Handles file uploads up to 4GB — required for sending downloaded videos
   # Docs: https://github.com/tdlib/telegram-bot-api
   telegram-api:
-    image: ghcr.io/tdlib/telegram-bot-api:latest
+    image: aiogram/telegram-bot-api:latest
     container_name: bbdown-telegram-api
     restart: unless-stopped
     environment:
