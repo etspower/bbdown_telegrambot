@@ -7,6 +7,7 @@ start_api.py
 也可由 main.py 导入调用：  from start_api import ensure_api_running, ensure_bbdown_installed
 """
 
+import json
 import os
 import platform
 import shutil
@@ -34,71 +35,96 @@ IMAGE          = "aiogram/telegram-bot-api:latest"
 PORT           = 8081
 
 # BBDown 安装路径（优先级）
-BBDOWN_INSTALL_PATH = Path("/usr/local/bin/BBDown")
+BBDOWN_INSTALL_PATH  = Path("/usr/local/bin/BBDown")
 BBDOWN_FALLBACK_PATH = _project_root / "tools" / "BBDown"
 
-# BBDown GitHub Release 下载地址
-_BBDOWN_RELEASE_BASE = "https://github.com/nilaoda/BBDown/releases/latest/download"
+# BBDown GitHub API
+_BBDOWN_API_URL = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
 
 
-def _detect_bbdown_asset() -> str:
-    """根据当前操作系统和架构选择对应的 BBDown 压缩包名。"""
+def _platform_keyword() -> str:
+    """返回用于匹配 asset 名称的关键字，如 'linux-x64'。"""
     machine = platform.machine().lower()
-    system = platform.system().lower()
+    system  = platform.system().lower()
 
     if system == "linux":
-        if machine in ("x86_64", "amd64"):
-            return "BBDown_linux-x64.zip"
-        elif machine in ("aarch64", "arm64"):
-            return "BBDown_linux-arm64.zip"
-    elif system == "darwin":
-        if machine in ("arm64", "aarch64"):
-            return "BBDown_osx-arm64.zip"
-        return "BBDown_osx-x64.zip"
-    elif system == "windows":
-        return "BBDown_win-x64.zip"
+        return "linux-arm64" if machine in ("aarch64", "arm64") else "linux-x64"
+    if system == "darwin":
+        return "osx-arm64" if machine in ("aarch64", "arm64") else "osx-x64"
+    if system == "windows":
+        return "win-x64"
+    return "linux-x64"
 
-    # 默认 linux-x64
-    return "BBDown_linux-x64.zip"
+
+def _get_bbdown_download_url() -> str | None:
+    """
+    请求 GitHub API 获取最新 BBDown Release，
+    根据当前平台匹配对应 asset 的 browser_download_url。
+    """
+    keyword = _platform_keyword()
+    print(f"[start_api] 🔍 查询 BBDown 最新版本（平台：{keyword}）...", flush=True)
+    try:
+        req = urllib.request.Request(
+            _BBDOWN_API_URL,
+            headers={"User-Agent": "bbdown-telegrambot/1.0", "Accept": "application/vnd.github+json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        print(f"[start_api] ❌ 无法请求 GitHub API：{e}")
+        return None
+
+    assets = data.get("assets", [])
+    tag    = data.get("tag_name", "unknown")
+    print(f"[start_api] 📦 最新版本：{tag}，共 {len(assets)} 个资源")
+
+    for asset in assets:
+        name: str = asset.get("name", "")
+        if keyword in name and name.endswith(".zip"):
+            url = asset["browser_download_url"]
+            print(f"[start_api] 📥 匹配到：{name}")
+            return url
+
+    print(f"[start_api] ❌ 未找到匹配 '{keyword}' 的资源")
+    return None
 
 
 def find_bbdown() -> str | None:
     """
-    按优先级查找 BBDown 可执行文件：
+    按优先级查找 BBDown：
     1. /usr/local/bin/BBDown
     2. 项目目录/tools/BBDown
-    3. PATH 中的 BBDown
+    3. 系统 PATH
     """
-    candidates = [
-        BBDOWN_INSTALL_PATH,
-        BBDOWN_FALLBACK_PATH,
-    ]
-    for p in candidates:
+    for p in (BBDOWN_INSTALL_PATH, BBDOWN_FALLBACK_PATH):
         if p.exists() and os.access(p, os.X_OK):
             return str(p)
-
-    # 在 PATH 中查找
-    found = shutil.which("BBDown") or shutil.which("bbdown")
-    return found
+    return shutil.which("BBDown") or shutil.which("bbdown")
 
 
 def ensure_bbdown_installed() -> str | None:
     """
     确保 BBDown 已安装。
-    如果未找到，自动从 GitHub 下载并安装。
-    返回 BBDown 可执行文件的绝对路径，失败返回 None。
+    如果未找到，自动从 GitHub 下载最新 Release 并安装。
+    返回可执行文件的绝对路径，失败返回 None。
     """
     existing = find_bbdown()
     if existing:
         print(f"[start_api] ✅ BBDown 已存在：{existing}")
         return existing
 
-    asset = _detect_bbdown_asset()
-    url = f"{_BBDOWN_RELEASE_BASE}/{asset}"
+    url = _get_bbdown_download_url()
+    if not url:
+        return None
+
     tmp_zip = Path("/tmp/bbdown_dl.zip")
     tmp_dir = Path("/tmp/bbdown_extract")
+    # 清理可能残留的临时文件
+    tmp_zip.unlink(missing_ok=True)
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
 
-    print(f"[start_api] 📥 BBDown 未找到，正在下载 {asset} ...", flush=True)
+    print(f"[start_api] ⬇️  正在下载 ...", flush=True)
     try:
         urllib.request.urlretrieve(url, tmp_zip)
     except Exception as e:
@@ -113,33 +139,34 @@ def ensure_bbdown_installed() -> str | None:
         print(f"[start_api] ❌ 解压失败：{e}")
         return None
 
-    extracted = tmp_dir / "BBDown"
-    if not extracted.exists():
-        # 查找压缩包内第一个文件
-        files = list(tmp_dir.iterdir())
-        if not files:
-            print("[start_api] ❌ 解压内容为空")
-            return None
-        extracted = files[0]
+    # 在解压目录中查找可执行文件（名为 BBDown 或不含扩展名）
+    extracted = None
+    for f in tmp_dir.iterdir():
+        if f.name.lower() in ("bbdown", "bbdown.exe") or (f.is_file() and not f.suffix):
+            extracted = f
+            break
+    if extracted is None:
+        candidates = [f for f in tmp_dir.iterdir() if f.is_file()]
+        extracted  = candidates[0] if candidates else None
+    if extracted is None:
+        print("[start_api] ❌ 解压内容为空")
+        return None
 
-    # 尝试安装到 /usr/local/bin，失败则安装到 tools/
+    # 尝试安装到 /usr/local/bin，没有权限则降级到 tools/
     install_path = BBDOWN_INSTALL_PATH
     try:
         shutil.copy2(extracted, install_path)
-        install_path.chmod(install_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"[start_api] ✅ BBDown 安装到 {install_path}")
     except PermissionError:
-        # 没有写入 /usr/local/bin 的权限，改用 tools/
         install_path = BBDOWN_FALLBACK_PATH
         install_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(extracted, install_path)
-        install_path.chmod(install_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"[start_api] ✅ BBDown 安装到 {install_path}（无 /usr/local/bin 权限）")
+        print(f"[start_api] ⚠️  无 /usr/local/bin 写入权限，安装到 {install_path}")
 
-    # 清理临时文件
+    install_path.chmod(install_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"[start_api] ✅ BBDown 安装到 {install_path}")
+
     tmp_zip.unlink(missing_ok=True)
     shutil.rmtree(tmp_dir, ignore_errors=True)
-
     return str(install_path)
 
 
@@ -154,7 +181,7 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool
 def ensure_api_running() -> bool:
     """
     确保 telegram-bot-api 容器正在运行。
-    如果端口已监听或容器已运行，直接返回 True。
+    如果端口已监听，直接返回 True。
     """
     if _port_open(PORT):
         print(f"[start_api] ✅ 端口 {PORT} 已在监听，跳过启动。")
@@ -206,16 +233,14 @@ def ensure_api_running() -> bool:
             return True
         print(f"  等待中... {i + 1}s", end="\r", flush=True)
 
-    print(f"\n[start_api] ❌ 启动超时（30s），请检查日志： docker logs {CONTAINER_NAME}")
+    print(f"\n[start_api] ❌ 启动超时（30s），请检查： docker logs {CONTAINER_NAME}")
     return False
 
 
 if __name__ == "__main__":
-    # 单独运行时：同时确保 BBDown 和 telegram-bot-api 就绪
     bbdown = ensure_bbdown_installed()
     if not bbdown:
         print("❌ BBDown 安装失败")
         sys.exit(1)
-
     ok = ensure_api_running()
     sys.exit(0 if ok else 1)
