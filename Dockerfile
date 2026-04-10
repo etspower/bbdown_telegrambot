@@ -12,10 +12,13 @@ RUN wget -q https://github.com/nilaoda/BBDown/releases/download/1.6.3/BBDown_1.6
     && rm -rf /tmp/bbdown.zip /tmp/bbdown \
     && BBDown --version
 
-# Step 2: Install ffmpeg (fall back to Aliyun mirror if deb.debian.org is unreachable)
+# Step 2: Install ffmpeg (use official Debian sources; DNS configured in docker-compose.yml build)
 RUN if command -v apt-get &>/dev/null; then \
-        # Try Aliyun mirror first for CN servers
-        echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free" > /etc/apt/sources.list \
+        cat > /etc/apt/sources.list << 'EOF'
+deb http://deb.debian.org/debian bookworm main contrib non-free
+deb http://deb.debian.org/debian-security bookworm-security main contrib non-free
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free
+EOF
         && apt-get update \
         && apt-get install -y --no-install-recommends ffmpeg \
         && rm -rf /var/lib/apt/lists/*; \

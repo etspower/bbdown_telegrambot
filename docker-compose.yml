@@ -17,7 +17,11 @@ services:
 
   # BBDown Telegram Bot
   bbdown-bot:
-    build: .
+    build:
+      context: .
+      dns:
+        - 8.8.8.8
+        - 8.8.4.4
     container_name: bbdown-bot
     restart: unless-stopped
     depends_on:
