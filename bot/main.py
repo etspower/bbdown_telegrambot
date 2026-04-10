@@ -20,7 +20,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.config import BOT_TOKEN, ADMIN_ID, BBDOWN_PATH, DATA_DIR, API_URL, is_admin
+from bot.config import BOT_TOKEN, ADMIN_ID, DATA_DIR, API_URL, is_admin
 from bot.handlers import router as handlers_router
 from bot.scheduler import check_subscriptions
 from bot.database import init_db
@@ -34,7 +34,6 @@ except PermissionError as e:
     raise
 
 LOG_FILE = LOG_DIR / "bot.log"
-
 formatter = logging.Formatter(
     fmt="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
@@ -52,6 +51,13 @@ root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
+
+# ── 工具函数：将项目根加入 sys.path ───────────────────────────────────────
+def _ensure_project_in_path():
+    root = str(Path(__file__).parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
 
 # ── Bot 初始化 ──────────────────────────────────────────────────────────────
 if API_URL and API_URL != "https://api.telegram.org":
@@ -85,27 +91,34 @@ async def cmd_login(message: types.Message):
     login_tmp_dir = os.path.join(DATA_DIR, f"tmp_login_{message.from_user.id}_{uuid.uuid4().hex[:8]}")
     os.makedirs(login_tmp_dir, exist_ok=True)
 
-    cmd = [bbdown_path, "login"]
-    logger.info(f"Attempting to run BBDown with path: '{bbdown_path}'")
-
+    # 如果配置的路径不存在，尝试自动查找 / 重新安装
     if not os.path.exists(bbdown_path):
-        bbdown_resolved = shutil.which("BBDown") or shutil.which("bbdown")
-        if not bbdown_resolved:
+        _ensure_project_in_path()
+        try:
+            from start_api import ensure_bbdown_installed
+            resolved = ensure_bbdown_installed()
+        except ImportError:
+            resolved = shutil.which("BBDown") or shutil.which("bbdown")
+
+        if not resolved:
             await status_msg.edit_text(
-                f"❌ BBDown not found!\n\nPlease install BBDown:\n"
-                f"```bash\nmkdir -p ~/bbdown_telegrambot/tools\n"
-                f"cd ~/bbdown_telegrambot/tools\n"
-                f"wget https://github.com/nilaoda/BBDown/releases/latest/download/BBDown\n"
-                f"chmod +x BBDown\n```\n\nThen set in .env:\nBBDOWN_PATH=tools/BBDown"
+                "❌ BBDown 未找到且自动安装失败！\n"
+                "请手动安装：\n"
+                "```bash\n"
+                "wget https://github.com/nilaoda/BBDown/releases/latest/download/BBDown_linux-x64.zip \\\ \n"
+                "  -O /tmp/bb.zip && unzip /tmp/bb.zip -d /tmp/bb\n"
+                "sudo mv /tmp/bb/BBDown /usr/local/bin/BBDown && sudo chmod +x /usr/local/bin/BBDown\n"
+                "```"
             )
             _cleanup_login_dir(login_tmp_dir)
             return
-        bbdown_path = bbdown_resolved
-        config.BBDOWN_PATH = bbdown_resolved
+        bbdown_path = resolved
+        config.BBDOWN_PATH = resolved
+        logger.info(f"BBDown resolved: {bbdown_path}")
 
     try:
         process = await asyncio.create_subprocess_exec(
-            *cmd,
+            bbdown_path, "login",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=login_tmp_dir
@@ -213,14 +226,30 @@ async def main():
     if ADMIN_ID == 0:
         logger.warning("WARNING: ADMIN_ID is 0. The bot will reject ALL user commands.")
 
+    _ensure_project_in_path()
+
+    # ── 自动安装 BBDown ──
+    logger.info("🔍 检查 BBDown 安装情况...")
+    try:
+        from start_api import ensure_bbdown_installed
+        import bot.config as config
+        bbdown_path = ensure_bbdown_installed()
+        if bbdown_path:
+            config.BBDOWN_PATH = bbdown_path
+            logger.info(f"✅ BBDown 路径已设置：{bbdown_path}")
+        else:
+            logger.critical(
+                "❌ BBDown 未找到且自动安装失败！\n"
+                "请手动安装后再启动，或在 .env 中设置 BBDOWN_PATH=正确路径。"
+            )
+            sys.exit(1)
+    except ImportError as e:
+        logger.warning(f"无法导入 start_api.py，跳过 BBDown 自动安装：{e}")
+
     # ── 自动启动本地 telegram-bot-api ──
     if API_URL and ("localhost" in API_URL or "127.0.0.1" in API_URL):
         logger.info("检测到本地 API_URL，尝试通过 Docker 启动 telegram-bot-api...")
         try:
-            # 将项目根目录加入 sys.path 以支持不同工作目录启动
-            _root = str(Path(__file__).parent.parent)
-            if _root not in sys.path:
-                sys.path.insert(0, _root)
             from start_api import ensure_api_running
             if not ensure_api_running():
                 logger.critical(
