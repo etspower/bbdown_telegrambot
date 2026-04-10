@@ -13,8 +13,7 @@ pinned: false
 
 核心下载驱动：[BBDown](https://github.com/nilaoda/BBDown) ｜ Bot 框架：[aiogram](https://github.com/aiogram/aiogram)
 
-> **当前部署环境**：加拿大可用区（Oracle Cloud Canada，已脱离中国大陆网络屏蔽范围）。  
-> 所有 BBDown 调用默认使用 **`-tv`（TV 端接口）**，无需代理即可正常下载。
+> 所有 BBDown 调用默认使用 **`-tv`（TV 端接口）**。
 
 ---
 
@@ -156,12 +155,6 @@ bbdown_telegrambot/
 | `BBDOWN_EXTRA_ARGS` | 注入到所有 BBDown 调用的全局附加参数 | `-tv` |
 | `BBDOWN_PATH` | BBDown 可执行文件路径 | `BBDown`（从 `PATH` 查找） |
 
-**为什么使用 `-tv`？**
-
-- TV 端接口不受 Bilibili Web 端 412 反爬限制，在海外服务器（尤其加拿大/美国节点）稳定可用
-- 登录后 TV 端凭证可访问大部分 1080P 及以上画质（会员内容需绑定大会员账号）
-- 无需 Cloudflare WARP 或其他代理
-
 如需临时切换为 Web 端接口（例如调试），可在 `.env` 中将 `BBDOWN_EXTRA_ARGS` 置空：
 
 ```ini
@@ -208,8 +201,7 @@ BBDOWN_PATH=/your/custom/path/BBDown
 登录凭证保存在 `data/BBDown.data`。重新扫码会覆盖旧凭证。确认容器对该文件有写权限。
 
 **Q: 下载时提示 412 错误？**  
-确认 `BBDOWN_EXTRA_ARGS=-tv` 已生效（查看日志中的 `🔧 BBDown 最终命令` 是否包含 `-tv`）。  
-若服务器位于中国大陆网络，建议迁移至海外可用区（加拿大、新加坡等）。
+确认 `BBDOWN_EXTRA_ARGS=-tv` 已生效（查看日志中的 `🔧 BBDown 最终命令` 是否包含 `-tv`）。可能为 B 站屏蔽服务器 IP，需要切换到 B 站未屏蔽的地址。
 
 **Q: Docker 构建时卡住，报 `Could not resolve deb.debian.org`？**  
 服务器 DNS 解析失败（Oracle Cloud 等云平台常见）。先试：
