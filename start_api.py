@@ -2,9 +2,9 @@
 """
 start_api.py
 启动 telegram-bot-api 本地服务器（Docker 容器方式）。
-同时提供 BBDown 自动安装功能。
+同时提供 BBDown、ffmpeg 自动安装功能。
 直接运行：  python3 start_api.py
-也可由 main.py 导入调用：  from start_api import ensure_api_running, ensure_bbdown_installed
+也可由 main.py 导入调用：  from start_api import ensure_api_running, ensure_bbdown_installed, ensure_ffmpeg_installed
 """
 
 import json
@@ -34,19 +34,65 @@ CONTAINER_NAME = "telegram-bot-api"
 IMAGE          = "aiogram/telegram-bot-api:latest"
 PORT           = 8081
 
-# BBDown 安装路径（优先级）
 BBDOWN_INSTALL_PATH  = Path("/usr/local/bin/BBDown")
 BBDOWN_FALLBACK_PATH = _project_root / "tools" / "BBDown"
-
-# BBDown GitHub API
 _BBDOWN_API_URL = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
 
 
+# ── ffmpeg ─────────────────────────────────────────────────────────────────
+
+def ensure_ffmpeg_installed() -> bool:
+    """
+    检查 ffmpeg 是否可用，不存在则自动安装。
+    Linux 用 apt-get，macOS 用 brew。
+    返回 True 表示 ffmpeg 可用。
+    """
+    if shutil.which("ffmpeg"):
+        print("[start_api] ✅ ffmpeg 已安装")
+        return True
+
+    system = platform.system().lower()
+    print("[start_api] 📦 ffmpeg 未找到，尝试自动安装...", flush=True)
+
+    if system == "linux":
+        # 先尝试 apt-get，失败则尝试 apt
+        for pkg_mgr in (["apt-get", "install", "-y", "ffmpeg"],
+                        ["apt",     "install", "-y", "ffmpeg"]):
+            result = subprocess.run(
+                ["sudo", "--non-interactive"] + pkg_mgr,
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and shutil.which("ffmpeg"):
+                print("[start_api] ✅ ffmpeg 安装成功")
+                return True
+        # sudo 可能不可用，尝试不带 sudo
+        result = subprocess.run(
+            ["apt-get", "install", "-y", "ffmpeg"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and shutil.which("ffmpeg"):
+            print("[start_api] ✅ ffmpeg 安装成功")
+            return True
+
+    elif system == "darwin":
+        result = subprocess.run(["brew", "install", "ffmpeg"], capture_output=True, text=True)
+        if result.returncode == 0 and shutil.which("ffmpeg"):
+            print("[start_api] ✅ ffmpeg 安装成功 (brew)")
+            return True
+
+    print(
+        "[start_api] ❌ ffmpeg 自动安装失败，请手动安装：\n"
+        "            Ubuntu/Debian: sudo apt-get install -y ffmpeg\n"
+        "            macOS:         brew install ffmpeg"
+    )
+    return False
+
+
+# ── BBDown ─────────────────────────────────────────────────────────────────
+
 def _platform_keyword() -> str:
-    """返回用于匹配 asset 名称的关键字，如 'linux-x64'。"""
     machine = platform.machine().lower()
     system  = platform.system().lower()
-
     if system == "linux":
         return "linux-arm64" if machine in ("aarch64", "arm64") else "linux-x64"
     if system == "darwin":
@@ -57,10 +103,6 @@ def _platform_keyword() -> str:
 
 
 def _get_bbdown_download_url() -> str | None:
-    """
-    请求 GitHub API 获取最新 BBDown Release，
-    根据当前平台匹配对应 asset 的 browser_download_url。
-    """
     keyword = _platform_keyword()
     print(f"[start_api] 🔍 查询 BBDown 最新版本（平台：{keyword}）...", flush=True)
     try:
@@ -81,21 +123,14 @@ def _get_bbdown_download_url() -> str | None:
     for asset in assets:
         name: str = asset.get("name", "")
         if keyword in name and name.endswith(".zip"):
-            url = asset["browser_download_url"]
             print(f"[start_api] 📥 匹配到：{name}")
-            return url
+            return asset["browser_download_url"]
 
     print(f"[start_api] ❌ 未找到匹配 '{keyword}' 的资源")
     return None
 
 
 def find_bbdown() -> str | None:
-    """
-    按优先级查找 BBDown：
-    1. /usr/local/bin/BBDown
-    2. 项目目录/tools/BBDown
-    3. 系统 PATH
-    """
     for p in (BBDOWN_INSTALL_PATH, BBDOWN_FALLBACK_PATH):
         if p.exists() and os.access(p, os.X_OK):
             return str(p)
@@ -104,8 +139,7 @@ def find_bbdown() -> str | None:
 
 def ensure_bbdown_installed() -> str | None:
     """
-    确保 BBDown 已安装。
-    如果未找到，自动从 GitHub 下载最新 Release 并安装。
+    确保 BBDown 已安装。未找到则从 GitHub 下载安装。
     返回可执行文件的绝对路径，失败返回 None。
     """
     existing = find_bbdown()
@@ -119,12 +153,11 @@ def ensure_bbdown_installed() -> str | None:
 
     tmp_zip = Path("/tmp/bbdown_dl.zip")
     tmp_dir = Path("/tmp/bbdown_extract")
-    # 清理可能残留的临时文件
     tmp_zip.unlink(missing_ok=True)
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
 
-    print(f"[start_api] ⬇️  正在下载 ...", flush=True)
+    print("[start_api] ⬇️  正在下载 ...", flush=True)
     try:
         urllib.request.urlretrieve(url, tmp_zip)
     except Exception as e:
@@ -139,7 +172,6 @@ def ensure_bbdown_installed() -> str | None:
         print(f"[start_api] ❌ 解压失败：{e}")
         return None
 
-    # 在解压目录中查找可执行文件（名为 BBDown 或不含扩展名）
     extracted = None
     for f in tmp_dir.iterdir():
         if f.name.lower() in ("bbdown", "bbdown.exe") or (f.is_file() and not f.suffix):
@@ -152,7 +184,6 @@ def ensure_bbdown_installed() -> str | None:
         print("[start_api] ❌ 解压内容为空")
         return None
 
-    # 尝试安装到 /usr/local/bin，没有权限则降级到 tools/
     install_path = BBDOWN_INSTALL_PATH
     try:
         shutil.copy2(extracted, install_path)
@@ -170,7 +201,7 @@ def ensure_bbdown_installed() -> str | None:
     return str(install_path)
 
 
-# ── telegram-bot-api 部分 ──────────────────────────────────────────────
+# ── telegram-bot-api ──────────────────────────────────────────────────────
 
 def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -179,10 +210,6 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool
 
 
 def ensure_api_running() -> bool:
-    """
-    确保 telegram-bot-api 容器正在运行。
-    如果端口已监听，直接返回 True。
-    """
     if _port_open(PORT):
         print(f"[start_api] ✅ 端口 {PORT} 已在监听，跳过启动。")
         return True
@@ -190,10 +217,7 @@ def ensure_api_running() -> bool:
     if not API_ID or not API_HASH:
         print(
             "[start_api] ❌ 缺少 TELEGRAM_API_ID 或 TELEGRAM_API_HASH！\n"
-            "            请在 .env 中设置：\n"
-            "              TELEGRAM_API_ID=你的api_id\n"
-            "              TELEGRAM_API_HASH=你的api_hash\n"
-            "            从 https://my.telegram.org 获取"
+            "            请在 .env 中设置，从 https://my.telegram.org 获取"
         )
         return False
 
@@ -238,6 +262,7 @@ def ensure_api_running() -> bool:
 
 
 if __name__ == "__main__":
+    ensure_ffmpeg_installed()
     bbdown = ensure_bbdown_installed()
     if not bbdown:
         print("❌ BBDown 安装失败")
