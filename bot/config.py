@@ -105,6 +105,16 @@ if not _path_data.exists():
 VIDEO_EXT = {'.mp4', '.mkv', '.flv'}
 AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 
+# -----------------------------------------------------------------------
+# BBDown 全局附加参数
+# -tv  使用 TV 端接口下载，无需大会员也可访问较高画质，且不受部分地区 412 限制
+# 该列表会被注入到所有 BBDown 调用（解析 & 下载），可在 .env 中通过
+# BBDOWN_EXTRA_ARGS 覆盖（空格分隔，例如 "-tv --only-hevc"）
+# -----------------------------------------------------------------------
+_raw_extra = os.getenv("BBDOWN_EXTRA_ARGS", "-tv").strip('"').strip("'")
+BBDOWN_EXTRA_ARGS: list[str] = [a for a in _raw_extra.split() if a]
+logger.debug(f"BBDOWN_EXTRA_ARGS: {BBDOWN_EXTRA_ARGS}")
+
 # 画质选项映射
 # Bilibili 视频清晰度名称（dfn）完整列表
 # 注意：BBDown 的 -q 参数需要使用这些完整名称

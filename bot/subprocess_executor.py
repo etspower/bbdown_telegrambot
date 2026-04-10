@@ -310,6 +310,9 @@ async def run_bbdown(
     """
     执行 BBDown 命令的便捷封装。
     
+    全局附加参数（BBDOWN_EXTRA_ARGS，默认 ["-tv"]）会自动注入到所有调用中，
+    无需在每个调用处手动添加。
+
     Args:
         args: BBDown 参数列表（不含 bbdown 可执行文件本身）
         cwd: 工作目录
@@ -324,7 +327,12 @@ async def run_bbdown(
         from bot.config import BBDOWN_PATH
         bbdown_path = BBDOWN_PATH
     
-    cmd = [bbdown_path] + args
+    # 注入全局附加参数（如 -tv），去重防止重复添加
+    from bot.config import BBDOWN_EXTRA_ARGS
+    extra = [a for a in BBDOWN_EXTRA_ARGS if a not in args]
+    cmd = [bbdown_path] + extra + args
+    
+    logger.debug(f"🔧 BBDown 最终命令: {' '.join(cmd)}")
     
     executor = SubprocessExecutor(timeout=timeout)
     
@@ -345,6 +353,7 @@ async def run_bbdown(
 async def run_bbdown_simple(args: list[str], cwd: str, timeout: int = DEFAULT_INFO_TIMEOUT) -> ProcessResult:
     """
     执行 BBDown 命令（无进度回调），适用于快速查询操作。
+    BBDOWN_EXTRA_ARGS（默认 -tv）会由 run_bbdown 自动注入。
     """
     return await run_bbdown(args, cwd, timeout=timeout, progress_callback=None)
 
