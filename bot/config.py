@@ -55,10 +55,10 @@ def get_bbdown_path() -> str:
     3. 相对路径：相对于项目根目录解析
     """
     raw = os.getenv("BBDOWN_PATH", "BBDown").strip('"').strip("'")
-    # 1. 纯文件名 -> PATH 查找
+    # 1. 纯文件名 -> PATH 查找，但必须验证文件真实存在
     if os.path.sep not in raw and "/" not in raw and "\\" not in raw:
         found = shutil.which(raw)
-        if found:
+        if found and os.path.exists(found):
             return found
         fallback = Path(__file__).parent.parent / "tools" / raw
         if fallback.exists():
