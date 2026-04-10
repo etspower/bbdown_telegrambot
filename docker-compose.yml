@@ -19,11 +19,11 @@ services:
   bbdown-bot:
     build:
       context: .
-      dns:
-        - 8.8.8.8
-        - 8.8.4.4
     container_name: bbdown-bot
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       telegram-api:
         condition: service_healthy
