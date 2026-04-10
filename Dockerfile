@@ -16,8 +16,7 @@ RUN apt-get update \
     && unzip -o /tmp/bbdown.zip -d /tmp/bbdown \
     && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown \
     && chmod +x /usr/local/bin/BBDown \
-    && rm -rf /tmp/bbdown.zip /tmp/bbdown \
-    && BBDown --version
+    && rm -rf /tmp/bbdown.zip /tmp/bbdown
 
 # Step 2: Python deps
 COPY requirements.txt .
