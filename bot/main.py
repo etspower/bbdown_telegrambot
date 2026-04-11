@@ -248,8 +248,7 @@ async def main():
         logger.info("🔍 检查 BBDown 安装情况...")
         bbdown_path = ensure_bbdown_installed()
         if bbdown_path:
-            config.BBDOWN_PATH = bbdown_path
-            logger.info(f"✅ BBDown 路径已设置：{bbdown_path}")
+            logger.info(f"✅ BBDown 路径：{bbdown_path}")
         else:
             logger.critical(
                 "❌ BBDown 未找到且自动安装失败！\n"
