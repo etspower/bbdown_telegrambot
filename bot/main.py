@@ -52,7 +52,7 @@ root_logger.addHandler(file_handler)
 logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
 
-# F-10: 清理 Bot 重启后遗留的孤儿临时下载目录
+# 清理 Bot 重启后遗留的孤儿临时下载目录
 downloads_dir = Path(DATA_DIR) / "downloads"
 if downloads_dir.exists():
     orphan_count = 0
@@ -135,10 +135,11 @@ async def cmd_login(message: types.Message):
 
     qr_file_path = os.path.join(login_tmp_dir, "qrcode.png")
     qr_sent = False
+    login_success = False
 
     try:
         async def read_output():
-            nonlocal qr_sent
+            nonlocal qr_sent, login_success
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -163,14 +164,15 @@ async def cmd_login(message: types.Message):
                             await status_msg.edit_text(f"Error sending QR photo: {ex}")
 
                 if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
+                    login_success = True
                     try:
                         await message.answer("✅ **Login Success!** Credentials saved.", parse_mode="Markdown")
-                    except:
+                    except Exception:
                         await message.answer("✅ Login Success! Credentials saved.")
                 elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
                     try:
                         await message.answer("❌ **Login Failed/Expired.** Please try `/login` again.", parse_mode="Markdown")
-                    except:
+                    except Exception:
                         await message.answer(f"❌ Login Failed: {decoded_line}")
 
         try:
@@ -189,14 +191,48 @@ async def cmd_login(message: types.Message):
             shutil.copy2(credentials_src, dest)
             logger.info(f"Credentials saved to {dest}")
             await status_msg.edit_text("Login successful!" if qr_sent else "BBDown exited but you may already be logged in.")
+            login_success = True
         else:
             await status_msg.edit_text("Login failed! No credentials file found.")
+            login_success = False
+
+        # ── 登录成功后：同步 Cookie 到 rsshub 并拉起容器 ──────────────────
+        if login_success:
+            await _post_login_start_rsshub(message)
 
     except Exception as e:
         logger.exception("Login process error")
         await status_msg.edit_text(f"❌ 登录过程发生错误：{e}")
     finally:
         _cleanup_login_dir(login_tmp_dir)
+
+
+async def _post_login_start_rsshub(message: types.Message):
+    """登录成功后同步 Cookie 并拉起 RSSHub 容器，向用户反馈结果。"""
+    # 仅调试模式（非全容器化）才需要手动拉起
+    if not _is_debug_mode():
+        logger.info("Full container mode, skip manual rsshub start")
+        return
+
+    notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub 并启动容器...")
+    try:
+        from bot.rsshub_manager import ensure_rsshub_running
+        success, msg = await ensure_rsshub_running()
+        await notify.edit_text(f"RSSHub: {msg}")
+    except Exception as e:
+        logger.exception("_post_login_start_rsshub error")
+        await notify.edit_text(f"⚠️ RSSHub 启动时发生异常：{e}")
+
+
+def _is_debug_mode() -> bool:
+    """
+    判断当前是否为「调试模式」（Python 直接运行，非全容器化）。
+
+    判断依据：RSSHUB_BASE_URL 包含 localhost 或 127.0.0.1。
+    全容器化时 rsshub 通过内网 http://rsshub:1200 访问，不含 localhost。
+    """
+    rsshub_url = os.getenv("RSSHUB_BASE_URL", "")
+    return "localhost" in rsshub_url or "127.0.0.1" in rsshub_url
 
 
 def _cleanup_login_dir(path: str):
@@ -224,6 +260,43 @@ async def start_dummy_server():
     logger.info("Dummy web server started on port 7860 for Hugging Face.")
 
 
+async def _startup_rsshub_check():
+    """
+    启动时检测 B 站登录状态与 RSSHub 容器状态，按情况自动处理：
+
+    - 已登录 + rsshub 未运行  → 自动拉起，发消息通知
+    - 已登录 + rsshub 已运行  → 同步最新 Cookie（重启生效），静默
+    - 未登录                  → 只记录日志，等用户 /login 后再处理
+    """
+    if not _is_debug_mode():
+        logger.info("Full container mode: rsshub managed by docker compose, skip startup check")
+        return
+
+    from bot.rsshub_manager import is_logged_in, ensure_rsshub_running, _is_rsshub_container_running
+
+    if not is_logged_in():
+        logger.info("B站未登录，跳过 RSSHub 启动检测。请发送 /login 完成登录。")
+        return
+
+    logger.info("B站已登录，检测 RSSHub 容器状态...")
+    running = await _is_rsshub_container_running()
+    if running:
+        logger.info("RSSHub 容器已在运行，同步最新 Cookie...")
+        from bot.rsshub_manager import sync_cookie_to_rsshub
+        ok = await sync_cookie_to_rsshub()
+        if ok:
+            logger.info("Cookie 同步完成（容器已运行，无需重启）")
+    else:
+        logger.info("RSSHub 容器未运行，自动拉起...")
+        success, msg = await ensure_rsshub_running()
+        logger.info(f"RSSHub 启动结果: {msg}")
+        # 通知管理员
+        try:
+            await bot.send_message(ADMIN_ID, f"🤖 启动检测\nRSSHub: {msg}")
+        except Exception as e:
+            logger.warning(f"发送 RSSHub 启动通知失败: {e}")
+
+
 async def main():
     if not BOT_TOKEN:
         logger.critical("FATAL: BOT_TOKEN is not set!")
@@ -237,14 +310,12 @@ async def main():
         from start_api import ensure_bbdown_installed, ensure_ffmpeg_installed
         import bot.config as config
 
-        # ── 检查 / 安装 ffmpeg ──
         logger.info("🔍 检查 ffmpeg 安装情况...")
         if not ensure_ffmpeg_installed():
             logger.warning(
                 "⚠️  ffmpeg 未找到且自动安装失败！视频合并功能可能不可用。\n"
                 "   请手动安装： sudo apt-get install -y ffmpeg"
             )
-        # ── 检查 / 安装 BBDown ──
         logger.info("🔍 检查 BBDown 安装情况...")
         bbdown_path = ensure_bbdown_installed()
         if bbdown_path:
@@ -295,6 +366,9 @@ async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_subscriptions, 'interval', minutes=30, args=[bot])
     scheduler.start()
+
+    # ── 启动时检测登录状态与 RSSHub 容器 ──
+    asyncio.create_task(_startup_rsshub_check())
 
     logger.info("Starting bot...")
     if os.getenv("SPACE_ID") and AIOHTTP_AVAILABLE:
