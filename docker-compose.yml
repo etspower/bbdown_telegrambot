@@ -15,6 +15,26 @@ services:
       - "8081:8081"
     stop_grace_period: 10s
 
+  # RSSHub — 用于订阅轮询，绕过 B 站 WBI 风控拿取 UP 主最新视频
+  # 仅内网暴露（不映射宿主机端口）， bot 容器通过 http://rsshub:1200 访问
+  rsshub:
+    image: diygod/rsshub:latest
+    container_name: bbdown-rsshub
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # 禁用内置首页和健康检查页面（可选，减少暴露面积）
+      - DISALLOW_ROBOT=1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:1200/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    # 内部网络不映射宿主机端口。若需宿主机直接访问调试，可启用下方注释:
+    # ports:
+    #   - "1200:1200"
+
   # BBDown Telegram Bot
   bbdown-bot:
     build:
@@ -27,11 +47,14 @@ services:
     depends_on:
       telegram-api:
         condition: service_healthy
+      rsshub:
+        condition: service_healthy
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_ID=${ADMIN_ID}
       - API_URL=http://telegram-api:8081
       - BBDOWN_PATH=/usr/local/bin/BBDown
+      - RSSHUB_BASE_URL=http://rsshub:1200
       # DATA_DIR auto-resolves to /app/data (project-root relative), no need to set here
     volumes:
       - ./data/bot:/app/data
