@@ -175,8 +175,8 @@ async def cb_sub_detail(callback: types.CallbackQuery):
         # 重新显示列表
         return await cb_subs_list(callback)
 
-    name_disp = sub.up_name if sub.up_name else "Unknown"
-    kw_disp = sub.keyword if sub.keyword else "全部内容 (无过滤)"
+    name_disp = escape_markdown(sub.up_name) if sub.up_name else "Unknown"
+    kw_disp = escape_markdown(sub.keyword) if sub.keyword else "全部内容 (无过滤)"
 
     # Check local BBDown cache
     cached_count = await count_videos_by_uid(uid)
@@ -258,7 +258,7 @@ async def cb_sub_editkw(callback: types.CallbackQuery, state: FSMContext):
 async def cb_sub_doeditkw(callback: types.CallbackQuery, state: FSMContext):
     """清空关键词"""
     # 格式: sub_doeditkw_{uid}_CLEAR
-    uid = callback.data.removeprefix("sub_doeditkw_").removesuffix("_CLEAR")
+    uid = callback.data[len("sub_doeditkw_"):-len("_CLEAR")]
     await add_subscription(uid, callback.from_user.id, None, None)
     await state.clear()
     await callback.answer("✅ 已清空过滤词，今后该 UP 的所有新视频皆会收到通知！", show_alert=True)
@@ -301,7 +301,7 @@ async def show_full_video_list(
     builder = InlineKeyboardBuilder()
     if not videos:
         txt = (
-            f"🗂️ **{up_name} 本地视频列表** (第 {page} 页)\n\n"
+            f"🗂️ **{escape_markdown(up_name)}** 的本地视频列表 (第 {page} 页)\n\n"
             f"❌ 此页暂无数据，请先点击「抓取全部视频列表」按鈕。"
         )
     else:
@@ -309,7 +309,7 @@ async def show_full_video_list(
         title_lines = ""
         for idx, v in enumerate(videos):
             seq = global_start + idx
-            display_title = v.title if v.title else f"[待解析] {v.bvid}"
+            display_title = escape_markdown(v.title) if v.title else f"[待解析] {v.bvid}"
             title_lines += f"`{seq}.` {display_title}\n"
             short = display_title[:22] + ("…" if len(display_title) > 22 else "")
             builder.row(InlineKeyboardButton(
@@ -317,7 +317,7 @@ async def show_full_video_list(
                 callback_data=f"directdl_{v.bvid}"
             ))
         txt = (
-            f"🗂️ **{up_name} 的全部投稿** (第 {page}/{total_pages} 页，共 {total} 个)\n"
+            f"🗂️ **{escape_markdown(up_name)}** 的全部投稿 (第 {page}/{total_pages} 页，共 {total} 个)\n"
             f"*点击视频序号按钮即可开始下载*\n\n"
             f"{title_lines}"
         )
@@ -373,11 +373,11 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
 
     subs = await get_user_subscriptions(callback.from_user.id)
     sub = next((s for s in subs if s.uid == uid), None)
-    up_name = sub.up_name if sub and sub.up_name else f"UID {uid}"
+    up_name = escape_markdown(sub.up_name) if sub and sub.up_name else f"UID {uid}"
 
     await callback.answer("开始后台抓取，请稍候...", show_alert=False)
     status_msg = await callback.message.answer(
-        f"📦 **正在用 BBDown 扫描 {up_name} 的全部投稿视频**\n"
+        f"📦 **正在用 BBDown 扫描 {up_name}** 的全部投稿视频\n"
         f"UID: `{uid}`\n\n"
         f"⏳ 正在枚举视频 URL，时间取决于视频数量，请耐心等待…",
         parse_mode="Markdown"
@@ -435,11 +435,16 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
                 pass
 
         # 保存任务引用，防止 Python 3.11+ 被 GC 提前回收导致异常静默丢失
+        # 完成后自动从 dict 中移除，防止内存泄漏
+        def _on_done(t: asyncio.Task, uid: str):
+            _background_parse_tasks.pop(uid, None)
+            if t.exception():
+                logger.error(f"Background parse task for {uid} failed: {t.exception()}")
+            else:
+                logger.info(f"Background parse for {uid} completed successfully")
+
         task = asyncio.create_task(background_parse())
-        task.add_done_callback(
-            lambda t: logger.error(f"Background parse task failed: {t.exception()}")
-            if t.exception() else logger.info("Background parse completed successfully")
-        )
+        task.add_done_callback(lambda t: _on_done(t, uid))
         _background_parse_tasks[uid] = task
 
     else:
@@ -469,11 +474,11 @@ async def show_up_videos_gui(msg_obj: types.Message, uid: str, up_name: str, pag
     
     builder = InlineKeyboardBuilder()
     if not videos:
-        txt = f"📺 **{up_name} 的投稿视频** (第 {page} 页)\n\n❌ 抱歉，获取失败或此页已无更多内容返回。"
+        txt = f"📺 **{escape_markdown(up_name)}** 的投稿视频 (第 {page} 页)\n\n❌ 抱歉，获取失败或此页已无更多内容返回。"
     else:
-        txt = f"📺 **{up_name} 的投稿视频** (第 {page} 页)\n*点击下方对应序号的按钮，机器人将立即开始下载并发送给你！*\n\n"
+        txt = f"📺 **{escape_markdown(up_name)}** 的投稿视频 (第 {page} 页)\n*点击下方对应序号的按钮，机器人将立即开始下载并发送给你！*\n\n"
         for idx, v in enumerate(videos, 1):
-            txt += f"`{idx}.` {v['title']}\n"
+            txt += f"`{idx}.` {escape_markdown(v['title'])}\n"
             # Limit callback data length, pass download command
             builder.row(InlineKeyboardButton(
                 text=f"📥 下载第 {idx} 个: {v['title'][:12]}...",

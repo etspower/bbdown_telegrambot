@@ -122,10 +122,10 @@ def create_progress_bar(percentage: float, length: int = 15) -> str:
 
 def escape_markdown(text: str) -> str:
     """
-    转义 Telegram Markdownv2 保留字符，防止视频标题破坏消息格式。
-    转义：* _ ` [
+    转义 Telegram MarkdownV1 保留字符，防止视频标题破坏消息格式。
+    转义：\ _ * ` [ ] ( )（覆盖 V1 全部特殊字符）
     """
-    for ch in ('\\', '_', '*', '`', '[', ']'):
+    for ch in ('\\', '_', '*', '`', '[', ']', '(', ')'):
         text = text.replace(ch, '\\' + ch)
     return text
 
