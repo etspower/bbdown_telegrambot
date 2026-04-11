@@ -20,7 +20,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.config import BOT_TOKEN, ADMIN_ID, DATA_DIR, API_URL, is_admin
+from bot.config import BOT_TOKEN, ADMIN_ID, DATA_DIR, API_URL, is_admin, get_bbdown_path
 from bot.handlers import router as handlers_router
 from bot.scheduler import check_subscriptions
 from bot.database import init_db
@@ -51,6 +51,20 @@ root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 logger.info(f"📝 日志系统初始化完成，日志文件: {LOG_FILE}")
+
+# F-10: 清理 Bot 重启后遗留的孤儿临时下载目录
+downloads_dir = Path(DATA_DIR) / "downloads"
+if downloads_dir.exists():
+    orphan_count = 0
+    for item in downloads_dir.iterdir():
+        if item.is_dir():
+            try:
+                shutil.rmtree(item)
+                orphan_count += 1
+            except Exception:
+                pass
+    if orphan_count:
+        logger.info(f"🧹 清理了 {orphan_count} 个孤儿下载目录")
 
 
 def _ensure_project_in_path():
@@ -85,8 +99,7 @@ async def cmd_login(message: types.Message):
         return
 
     status_msg = await message.answer("Initializing BBDown login...")
-    import bot.config as config
-    bbdown_path = config.BBDOWN_PATH
+    bbdown_path = get_bbdown_path()
 
     login_tmp_dir = os.path.join(DATA_DIR, f"tmp_login_{message.from_user.id}_{uuid.uuid4().hex[:8]}")
     os.makedirs(login_tmp_dir, exist_ok=True)
@@ -106,7 +119,6 @@ async def cmd_login(message: types.Message):
             _cleanup_login_dir(login_tmp_dir)
             return
         bbdown_path = resolved
-        config.BBDOWN_PATH = resolved
         logger.info(f"BBDown resolved: {bbdown_path}")
 
     try:

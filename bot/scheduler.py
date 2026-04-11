@@ -23,7 +23,7 @@ from bot.config import get_bbdown_path, DATA_DIR, VIDEO_EXT, AUDIO_EXT, SCHEDULE
 from bot.subprocess_executor import (
     SubprocessExecutor, DEFAULT_DOWNLOAD_TIMEOUT, create_progress_bar
 )
-from bot.utils import sort_downloaded_files
+from bot.utils import sort_downloaded_files, escape_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
     up_display = f" ({up_name})" if up_name else ""
     msg = await bot.send_message(
         chat_id,
-        f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{title}**\nStarting download...",
+        f"Auto-download triggered for new video by **UID: {uid}**{up_display}:\n**{escape_markdown(title)}**\nStarting download...",
         parse_mode="Markdown"
     )
 
@@ -114,7 +114,7 @@ async def process_auto_download(bot: Bot, chat_id: int, uid: str, bvid: str, tit
             if (progress.percentage - last_pct) >= 20.0 or (now - last_update) >= 15.0:
                 bar = create_progress_bar(progress.percentage)
                 try:
-                    await msg.edit_text(f"Auto-downloading: **{title}**\n`{bar}`")
+                    await msg.edit_text(f"Auto-downloading: **{escape_markdown(title)}**\n`{bar}`")
                 except Exception:
                     pass
                 last_pct = progress.percentage

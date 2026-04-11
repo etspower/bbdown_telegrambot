@@ -24,6 +24,11 @@ from bot.database import (
 )
 from bot.bilibili_api import get_up_info, get_up_videos
 from bot.bbdown_fetcher import fetch_all_video_urls, parse_pending_videos
+from bot.utils import escape_markdown
+
+# 防止 Python 3.11+ 提前 GC 回收 fire-and-forget 任务（F-05 修复）
+# key=uid 保证：1) 引用不丢失 2) 同一 uid 不会并发两个任务 3) 完成后自动清理
+_background_parse_tasks: dict[str, asyncio.Task] = {}
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -113,7 +118,7 @@ async def process_sub_uid(message: types.Message, state: FSMContext):
     builder.row(InlineKeyboardButton(text="🔙 取消", callback_data="set_subs_list"))
     
     await processing_msg.edit_text(
-        f"✅ 已识别 UP 主：**{up_name}** (`{uid}`)\n\n"
+        f"✅ 已识别 UP 主：**{escape_markdown(up_name)}** (`{uid}`)\n\n"
         "请发送您要过滤的**标题关键词**（支持多个，请用逗号分隔，例如：`Vlog,日常,测评`）。\n"
         "只有标题包含这些关键词时，机器人才会自动推送。\n\n"
         "如果您想下载Ta发布的所有视频，请点击下方跳过。",
@@ -145,14 +150,14 @@ async def finish_add_sub(msg_obj: types.Message, state: FSMContext, keywords: st
     
     if success:
         await msg_obj.answer(
-            f"🎉 **订阅成功！**\n👤 UP: {up_name}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}",
+            f"🎉 **订阅成功！**\n👤 UP: {escape_markdown(up_name)}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}",
             parse_mode="Markdown"
         )
         # Prompt video page 1 directly
         await show_up_videos_gui(msg_obj, uid, up_name, 1)
     else:
         await msg_obj.answer(
-            f"✅ **订阅已更新！**\n👤 UP: {up_name}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}\n\n"
+            f"✅ **订阅已更新！**\n👤 UP: {escape_markdown(up_name)}\n🏷️ 关键词: {keywords if keywords else '全部无过滤'}\n\n"
             "该 UP 已存在，关键词已更新。",
             parse_mode="Markdown"
         )
@@ -349,10 +354,9 @@ async def show_full_video_list(
 @router.callback_query(F.data.startswith("sub_v_full_"))
 async def cb_sub_v_full(callback: types.CallbackQuery):
     """Pagination handler for the local (BBDown-cached) full video list."""
-    # Format: sub_v_full_{uid}_{page}
-    parts = callback.data.split("_")
-    uid = parts[3]
-    page = int(parts[4])
+    # Format: sub_v_full_{uid}_{page}  → rsplit gives ['sub_v_full', uid, page]
+    prefix, uid, page_str = callback.data.rsplit("_", 2)
+    page = int(page_str)
 
     subs = await get_user_subscriptions(callback.from_user.id)
     sub = next((s for s in subs if s.uid == uid), None)
@@ -430,11 +434,13 @@ async def cb_sub_fetch_full(callback: types.CallbackQuery):
             except Exception:
                 pass
 
+        # 保存任务引用，防止 Python 3.11+ 被 GC 提前回收导致异常静默丢失
         task = asyncio.create_task(background_parse())
         task.add_done_callback(
             lambda t: logger.error(f"Background parse task failed: {t.exception()}")
-            if t.exception() else None
+            if t.exception() else logger.info("Background parse completed successfully")
         )
+        _background_parse_tasks[uid] = task
 
     else:
         try:
@@ -500,9 +506,9 @@ async def show_up_videos_gui(msg_obj: types.Message, uid: str, up_name: str, pag
 @router.callback_query(F.data.startswith("sub_v_p_"))
 async def cb_sub_v_p(callback: types.CallbackQuery):
     """处理视频列表分页"""
-    parts = callback.data.split("_")
-    uid = parts[3]
-    page = int(parts[4])
+    # Format: sub_v_p_{uid}_{page}  → rsplit gives ['sub_v_p', uid, page]
+    prefix, uid, page_str = callback.data.rsplit("_", 2)
+    page = int(page_str)
     
     subs = await get_user_subscriptions(callback.from_user.id)
     sub = next((s for s in subs if s.uid == uid), None)

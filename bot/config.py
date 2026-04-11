@@ -6,9 +6,9 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
-# 调试：检查环境变量在 load_dotenv 之前的值
+# 调试：检查环境变量在 load_dotenv 之前的值（不打印 token 内容）
 _pre_token = os.getenv("BOT_TOKEN", "")
-logger.debug(f"Before load_dotenv, BOT_TOKEN from env: {f'{_pre_token[:10]}...{_pre_token[-4:]}' if _pre_token and len(_pre_token) > 14 else '(empty or too short)'}")
+logger.debug(f"BOT_TOKEN env var present: {bool(_pre_token)}")
 
 # 尝试从多个位置加载 .env 文件
 # 1. 当前工作目录
@@ -33,11 +33,9 @@ if _env_path.exists():
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip('"').strip("'")
 
-# 调试：打印 token 前后缀（不打印完整 token）
-if BOT_TOKEN:
-    _token_preview = f"{BOT_TOKEN[:10]}...{BOT_TOKEN[-4:]}" if len(BOT_TOKEN) > 14 else "(too short)"
-    logger.debug(f"BOT_TOKEN after all loading: {_token_preview}")
-else:
+# 调试：确认 BOT_TOKEN 是否成功加载
+logger.debug(f"BOT_TOKEN loaded: {bool(BOT_TOKEN)}")
+if not BOT_TOKEN:
     logger.warning("BOT_TOKEN is empty!")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip('"').strip("'"))

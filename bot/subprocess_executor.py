@@ -262,11 +262,8 @@ class SubprocessExecutor:
             return ProcessResult(return_code=-1, output="", error="Process not started")
         
         # 防御：如果 run_with_progress 未被调用（_start_time 仍为 0），使用完整超时
-        if self._start_time == 0.0:
-            remaining = float(self.timeout)
-        else:
-            elapsed = asyncio.get_running_loop().time() - self._start_time
-            remaining = max(1.0, self.timeout - elapsed)  # 至少保留 1 秒
+        elapsed = asyncio.get_running_loop().time() - self._start_time if self._start_time > 0.0 else 0.0
+        remaining = max(1.0, self.timeout - elapsed)
         
         try:
             await asyncio.wait_for(self._process.wait(), timeout=remaining)
@@ -324,8 +321,8 @@ async def run_bbdown(
         ProcessResult 对象
     """
     if bbdown_path is None:
-        from bot.config import BBDOWN_PATH
-        bbdown_path = BBDOWN_PATH
+        from bot.config import get_bbdown_path
+        bbdown_path = get_bbdown_path()
     
     # 注入全局附加参数（如 -tv），去重防止重复添加
     from bot.config import BBDOWN_EXTRA_ARGS

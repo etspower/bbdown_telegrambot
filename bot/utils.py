@@ -120,6 +120,16 @@ def create_progress_bar(percentage: float, length: int = 15) -> str:
     return f"[{'█' * filled}{'░' * empty}] {percentage:.1f}%"
 
 
+def escape_markdown(text: str) -> str:
+    """
+    转义 Telegram Markdownv2 保留字符，防止视频标题破坏消息格式。
+    转义：* _ ` [
+    """
+    for ch in ('\\', '_', '*', '`', '[', ']'):
+        text = text.replace(ch, '\\' + ch)
+    return text
+
+
 def format_duration(seconds: int) -> str:
     """
     将秒数格式化为可读的时间字符串。
