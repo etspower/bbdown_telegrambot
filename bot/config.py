@@ -33,7 +33,6 @@ if _env_path.exists():
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip('"').strip("'")
 
-# 调试：确认 BOT_TOKEN 是否成功加载
 logger.debug(f"BOT_TOKEN loaded: {bool(BOT_TOKEN)}")
 if not BOT_TOKEN:
     logger.warning("BOT_TOKEN is empty!")
@@ -79,24 +78,19 @@ SCHEDULER_MAX_PAGES = int(os.getenv("SCHEDULER_MAX_PAGES", "2"))
 # 使用相对于此文件的位置解析，而不是当前工作目录
 _raw_data_dir = os.getenv("DATA_DIR", "").strip('"').strip("'")
 if _raw_data_dir:
-    # 用户指定了路径，可能是相对或绝对路径
-    # 相对路径基于项目根目录（bot/ 父目录）解析，确保绝对路径
     _data_path = Path(_raw_data_dir)
     if not _data_path.is_absolute():
         _data_path = Path(__file__).parent.parent / _data_path
     DATA_DIR = str(_data_path.resolve())
 else:
-    # 默认：bot/../data（项目根目录下的 data）
     DATA_DIR = str(Path(__file__).parent.parent / "data")
 
-# Ensure DATA_DIR exists (deferred to avoid permission issues during import)
-# This will be called when the config module is imported
+# Ensure DATA_DIR exists
 _path_data = Path(DATA_DIR)
 if not _path_data.exists():
     try:
         _path_data.mkdir(parents=True, exist_ok=True)
     except PermissionError as e:
-        # Delay error until runtime, don't crash on import
         logger.warning(f"Cannot create DATA_DIR '{DATA_DIR}': {e}")
         logger.warning(f"Please set DATA_DIR in .env to a writable location.")
 
@@ -113,6 +107,15 @@ AUDIO_EXT = {'.mp3', '.m4a', '.aac'}
 _raw_extra = os.getenv("BBDOWN_EXTRA_ARGS", "-tv").strip('"').strip("'")
 BBDOWN_EXTRA_ARGS: list[str] = [a for a in _raw_extra.split() if a]
 logger.debug(f"BBDOWN_EXTRA_ARGS: {BBDOWN_EXTRA_ARGS}")
+
+# -----------------------------------------------------------------------
+# RSSHub 配置
+# 用于订阅轮询时获取 UP 主最新视频，绕过 B 站 WBI 风控
+#
+# 官方实例：https://rsshub.app  （内地用户可能访问不稳，建议自部署）
+# 自部署：  http://localhost:1200 或 http://your-server:1200
+# -----------------------------------------------------------------------
+RSSHUB_BASE_URL = os.getenv("RSSHUB_BASE_URL", "https://rsshub.app").strip('"').strip("'")
 
 # 画质选项映射
 # Bilibili 视频清晰度名称（dfn）完整列表
@@ -152,47 +155,24 @@ QUALITY_DFN = {
 }
 
 # 画质优先级配置 - 用于 BBDown -q 参数
-# 格式：key 是用户选择的画质，value 是逗号分隔的优先级列表
-# 注意：BBDown 的 -q 是优先级列表，会选择列表中第一个可用的画质
-# 重要：480P 配置只包含 480P 及以下画质，不包含 720P
-# Bilibili 画质名称可能因视频而异，这里列出所有可能的变体
 QUALITY_PRIORITY = {
-    # 最高画质（不限制）
-    "best": [],  # 空列表表示不添加 -q 参数
-    
-    # 限制最高 1080P
+    "best": [],
     "1080": [
-        # 1080P 系列
         "1080P 高码率", "1080P60", "1080P+", "1080P 高清", "1080P 大会员", "1080P",
-        # 720P 系列（1080P 不可用时的备选）
         "720P60", "720P 高清", "720P 大会员", "720P",
-        # 480P 系列
         "480P 清晰", "480P 高清", "480P 大会员", "480P",
-        # 360P 系列
         "360P 流畅", "360P 高清", "360P 大会员", "360P"
     ],
-    
-    # 限制最高 720P（不包含 1080P）
     "720": [
-        # 720P 系列
         "720P60", "720P 高清", "720P 大会员", "720P",
-        # 480P 系列
         "480P 清晰", "480P 高清", "480P 大会员", "480P",
-        # 360P 系列
         "360P 流畅", "360P 高清", "360P 大会员", "360P"
     ],
-    
-    # 限制最高 480P（关键：不包含任何 720P 变体）
     "480": [
-        # 480P 系列（所有可能的名称）
         "480P 清晰", "480P 高清", "480P 大会员", "480P",
-        # 360P 系列
         "360P 流畅", "360P 高清", "360P 大会员", "360P"
     ],
-    
-    # 限制最高 360P
     "360": [
-        # 360P 系列
         "360P 流畅", "360P 高清", "360P 大会员", "360P"
     ],
 }
