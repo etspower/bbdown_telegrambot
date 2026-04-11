@@ -209,7 +209,8 @@ async def get_wbi_keys(client: httpx.AsyncClient) -> Tuple[str, str]:
 
 async def get_up_info(uid: str) -> dict:
     try:
-        async with httpx.AsyncClient(headers=HEADERS, cookies=get_auth_cookies(), timeout=10.0) as client:
+        cookies = await get_auth_cookies()
+        async with httpx.AsyncClient(headers=HEADERS, cookies=cookies, timeout=10.0) as client:
             img_key, sub_key = await get_wbi_keys(client)
             params = encWbi({"mid": uid}, img_key, sub_key)
             resp = await client.get("https://api.bilibili.com/x/space/wbi/acc/info", params=params)
@@ -232,7 +233,8 @@ async def get_up_videos(uid: str, pn: int = 1, ps: int = 10, keywords: str = Non
         - filtered_list: 经关键词过滤后的视频列表。
     """
     try:
-        async with httpx.AsyncClient(headers=HEADERS, cookies=get_auth_cookies(), timeout=10.0) as client:
+        cookies = await get_auth_cookies()
+        async with httpx.AsyncClient(headers=HEADERS, cookies=cookies, timeout=10.0) as client:
             img_key, sub_key = await get_wbi_keys(client)
             params = encWbi({"mid": uid, "ps": ps, "pn": pn}, img_key, sub_key)
             resp = await client.get("https://api.bilibili.com/x/space/wbi/arc/search", params=params)
