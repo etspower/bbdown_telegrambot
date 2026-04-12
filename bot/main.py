@@ -208,20 +208,38 @@ async def cmd_login(message: types.Message):
 
 
 async def _post_login_start_rsshub(message: types.Message):
-    """登录成功后同步 Cookie 并拉起 RSSHub 容器，向用户反馈结果。"""
-    # 仅调试模式（非全容器化）才需要手动拉起
-    if not _is_debug_mode():
-        logger.info("Full container mode, skip manual rsshub start")
-        return
+    """登录成功后同步 Cookie 到 RSSHub。
 
-    notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub 并启动容器...")
+    - 全容器模式：始终同步 Cookie 到 rsshub.env，提示用户手动重启 rsshub 容器。
+    - 调试模式（localhost）：同步后自动执行 docker compose up 拉起容器。
+    """
+    notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub...")
     try:
-        from bot.rsshub_manager import ensure_rsshub_running
-        success, msg = await ensure_rsshub_running()
-        await notify.edit_text(f"RSSHub: {msg}")
+        from bot.rsshub_manager import sync_cookie_to_rsshub
+        logger.info("开始同步 B 站 Cookie 到 rsshub.env...")
+        ok = await sync_cookie_to_rsshub()
+        if ok:
+            logger.info("Cookie 已成功写入 rsshub.env")
+            if not _is_debug_mode():
+                # 全容器模式：Bot 无法直接重启兄弟容器，提示用户手动重启
+                logger.info("全容器模式：Cookie 已写入，请手动重启 rsshub 容器")
+                await notify.edit_text(
+                    "✅ B 站凭证已同步到 rsshub.env 文件。\n"
+                    "⚠️ 请在服务器终端手动执行以下命令使其生效：\n"
+                    "`docker compose restart rsshub`"
+                )
+            else:
+                # 调试模式：自动拉起容器
+                from bot.rsshub_manager import ensure_rsshub_running
+                success, msg = await ensure_rsshub_running()
+                logger.info(f"RSSHub 容器启动结果: {msg}")
+                await notify.edit_text(f"RSSHub: {msg}")
+        else:
+            logger.error("sync_cookie_to_rsshub 返回 False，Cookie 写入失败")
+            await notify.edit_text("⚠️ 凭证写入 rsshub.env 失败，请检查文件路径与权限。")
     except Exception as e:
         logger.exception("_post_login_start_rsshub error")
-        await notify.edit_text(f"⚠️ RSSHub 启动时发生异常：{e}")
+        await notify.edit_text(f"⚠️ RSSHub 同步时发生异常：{e}")
 
 
 def _is_debug_mode() -> bool:

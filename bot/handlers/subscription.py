@@ -12,6 +12,7 @@ import asyncio
 import logging
 
 from aiogram import Router, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
@@ -72,7 +73,14 @@ async def cb_subs_list(callback: types.CallbackQuery):
         f"您当前共有 **{len(subs)}** 个活跃订阅。\n"
         f"请点击 UP 主名字进行详细配置，或点击下方按钮添加。"
     )
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # 消息内容与当前完全一致，静默忽略，无需重复渲染
+            logger.debug("cb_subs_list: message is not modified, skipping edit")
+        else:
+            raise
 
 
 # --- Add Subscription Flow ---
@@ -102,10 +110,14 @@ async def process_sub_uid(message: types.Message, state: FSMContext):
         await message.answer("❌ UID 必须是纯数字。请重新发送:", reply_markup=builder.as_markup())
         return
         
-    # fetch UP info
+    # fetch UP info（容错处理：遭遇 B 站风控 -352 时允许继续订阅）
     processing_msg = await message.answer("🔍 正在拉取 UP 主信息...")
     up_info = await get_up_info(uid)
-    up_name = up_info["name"] if up_info else "Unknown UP"
+    if up_info:
+        up_name = up_info["name"]
+    else:
+        up_name = f"未知UP主({uid})"
+        logger.warning(f"process_sub_uid: get_up_info returned None for uid={uid}，可能遭遇风控，使用默认名称继续")
     
     await state.update_data(uid=uid, up_name=up_name)
     await state.set_state(SubFSM.waiting_for_keywords)
