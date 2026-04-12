@@ -210,8 +210,10 @@ async def cmd_login(message: types.Message):
 async def _post_login_start_rsshub(message: types.Message):
     """登录成功后同步 Cookie 到 RSSHub。
 
-    - 全容器模式：始终同步 Cookie 到 rsshub.env，提示用户手动重启 rsshub 容器。
-    - 调试模式（localhost）：同步后自动执行 docker compose up 拉起容器。
+    运行模式由环境变量 BOT_RUN_MODE 控制：
+    - local (默认)：python bot/main.py 直接运行，同步 Cookie 后自动执行
+                         docker compose up rsshub 拉起/重启容器。
+    - docker：全容器化部署，同步 Cookie 后提示手动重启 rsshub 容器。
     """
     notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub...")
     try:
@@ -220,8 +222,8 @@ async def _post_login_start_rsshub(message: types.Message):
         ok = await sync_cookie_to_rsshub()
         if ok:
             logger.info("Cookie 已成功写入 rsshub.env")
-            if not _is_debug_mode():
-                # 全容器模式：Bot 无法直接重启兄弟容器，提示用户手动重启
+            if _is_docker_mode():
+                # 全容器模式：Bot 容器无法直接重启兄弟容器，提示用户手动重启
                 logger.info("全容器模式：Cookie 已写入，请手动重启 rsshub 容器")
                 await notify.edit_text(
                     "✅ B 站凭证已同步到 rsshub.env 文件。\n"
@@ -229,7 +231,7 @@ async def _post_login_start_rsshub(message: types.Message):
                     "`docker compose restart rsshub`"
                 )
             else:
-                # 调试模式：自动拉起容器
+                # 本地调试模式：自动通过 docker compose up 拉起 rsshub 容器
                 from bot.rsshub_manager import ensure_rsshub_running
                 success, msg = await ensure_rsshub_running()
                 logger.info(f"RSSHub 容器启动结果: {msg}")
@@ -242,15 +244,22 @@ async def _post_login_start_rsshub(message: types.Message):
         await notify.edit_text(f"⚠️ RSSHub 同步时发生异常：{e}")
 
 
-def _is_debug_mode() -> bool:
-    """
-    判断当前是否为「调试模式」（Python 直接运行，非全容器化）。
+def _is_docker_mode() -> bool:
+    """判断当前是否为「全容器化模式」（bbdown-bot 本身也跑在 Docker 内）。
 
-    判断依据：RSSHUB_BASE_URL 包含 localhost 或 127.0.0.1。
-    全容器化时 rsshub 通过内网 http://rsshub:1200 访问，不含 localhost。
+    判断依据：环境变量 BOT_RUN_MODE。
+    - 未设置或为 'local'： python bot/main.py 直接运行（调试），可以调用
+                               docker compose 拉起 rsshub 容器。
+    - 为 'docker'：      bbdown-bot 本身跑在容器内，无法控制兄弟容器，
+                               需手动 docker compose restart rsshub。
+
+    不再通过 RSSHUB_BASE_URL 内容判断，避免 localhost vs.内网地址的混淤。
     """
-    rsshub_url = os.getenv("RSSHUB_BASE_URL", "")
-    return "localhost" in rsshub_url or "127.0.0.1" in rsshub_url
+    return os.getenv("BOT_RUN_MODE", "local").strip().lower() == "docker"
+
+
+# 兼容旧名，保留旧函数名不报错
+_is_debug_mode = lambda: not _is_docker_mode()
 
 
 def _cleanup_login_dir(path: str):
@@ -280,14 +289,17 @@ async def start_dummy_server():
 
 async def _startup_rsshub_check():
     """
-    启动时检测 B 站登录状态与 RSSHub 容器状态，按情况自动处理：
+    启动时检测 B 站登录状态与 RSSHub 容器状态。
 
-    - 已登录 + rsshub 未运行  → 自动拉起，发消息通知
-    - 已登录 + rsshub 已运行  → 同步最新 Cookie（重启生效），静默
-    - 未登录                  → 只记录日志，等用户 /login 后再处理
+    全容器模式 (BOT_RUN_MODE=docker)：
+        rsshub 由 docker compose 结合 rsshub.env 自行管理，跳过同步。
+    本地模式 (BOT_RUN_MODE=local 或未设置)：
+        - 已登录 + rsshub 未运行 → 同步 Cookie 并自动拉起容器。
+        - 已登录 + rsshub 已运行 → 同步最新 Cookie。
+        - 未登录            → 只记日志，等用户 /login。
     """
-    if not _is_debug_mode():
-        logger.info("Full container mode: rsshub managed by docker compose, skip startup check")
+    if _is_docker_mode():
+        logger.info("BOT_RUN_MODE=docker: rsshub managed by docker compose, skip startup check")
         return
 
     from bot.rsshub_manager import is_logged_in, ensure_rsshub_running, _is_rsshub_container_running
@@ -308,7 +320,6 @@ async def _startup_rsshub_check():
         logger.info("RSSHub 容器未运行，自动拉起...")
         success, msg = await ensure_rsshub_running()
         logger.info(f"RSSHub 启动结果: {msg}")
-        # 通知管理员
         try:
             await bot.send_message(ADMIN_ID, f"🤖 启动检测\nRSSHub: {msg}")
         except Exception as e:
@@ -321,6 +332,9 @@ async def main():
         return
     if ADMIN_ID == 0:
         logger.warning("WARNING: ADMIN_ID is 0. The bot will reject ALL user commands.")
+
+    run_mode = os.getenv("BOT_RUN_MODE", "local").strip().lower()
+    logger.info(f"🚀 运行模式: BOT_RUN_MODE={run_mode} ({'Docker Compose 全容器' if run_mode == 'docker' else 'Python 本地调试'})") 
 
     _ensure_project_in_path()
 
