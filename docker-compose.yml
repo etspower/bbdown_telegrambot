@@ -40,11 +40,11 @@ services:
       # 禁用内置首页和健康检查页面（可选，减少暴露面积）
       - DISALLOW_ROBOT=1
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:1200/healthz"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      test: ["CMD-SHELL", "kill -0 1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     # 内部网络不映射宿主机端口。若需宿主机直接访问调试，可启用下方注释:
     # ports:
     #   - "1200:1200"
