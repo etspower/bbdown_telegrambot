@@ -136,6 +136,7 @@ async def cmd_login(message: types.Message):
     qr_file_path = os.path.join(login_tmp_dir, "qrcode.png")
     qr_sent = False
     login_success = False
+    credentials_copied = False
 
     try:
         async def read_output():
@@ -163,12 +164,13 @@ async def cmd_login(message: types.Message):
                             logger.error(f"EXCEPTION in answer_photo: {ex}", exc_info=True)
                             await status_msg.edit_text(f"Error sending QR photo: {ex}")
 
+                # 检测到登录成功标记，但此时凭证文件可能还未写入
                 if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
                     login_success = True
                     try:
-                        await message.answer("✅ **Login Success!** Credentials saved.", parse_mode="Markdown")
+                        await message.answer("✅ **Login Success detected!** Waiting for credentials file...", parse_mode="Markdown")
                     except Exception:
-                        await message.answer("✅ Login Success! Credentials saved.")
+                        await message.answer("✅ Login Success detected! Waiting for credentials file...")
                 elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
                     try:
                         await message.answer("❌ **Login Failed/Expired.** Please try `/login` again.", parse_mode="Markdown")
@@ -185,19 +187,53 @@ async def cmd_login(message: types.Message):
 
         await process.wait()
 
+        # 等待并尝试复制凭证文件（BBDown 可能异步写入）
         credentials_src = os.path.join(login_tmp_dir, "BBDown.data")
-        if os.path.exists(credentials_src):
-            dest = os.path.join(DATA_DIR, "BBDown.data")
-            shutil.copy2(credentials_src, dest)
-            logger.info(f"Credentials saved to {dest}")
-            await status_msg.edit_text("Login successful!" if qr_sent else "BBDown exited but you may already be logged in.")
-            login_success = True
+        dest = os.path.join(DATA_DIR, "BBDown.data")
+        
+        # 最多等待 5 秒让 BBDown 完成文件写入
+        for attempt in range(10):
+            if os.path.exists(credentials_src):
+                try:
+                    shutil.copy2(credentials_src, dest)
+                    logger.info(f"Credentials saved to {dest}")
+                    credentials_copied = True
+                    break
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1}: Failed to copy credentials: {e}")
+            await asyncio.sleep(0.5)
+        
+        # 如果 tmp 目录没找到，检查其他可能位置
+        if not credentials_copied:
+            # 检查 BBDown 默认配置目录
+            home_dir = os.path.expanduser("~")
+            possible_paths = [
+                os.path.join(home_dir, ".config", "BBDown", "BBDown.data"),
+                os.path.join(home_dir, "BBDown.data"),
+            ]
+            for alt_path in possible_paths:
+                if os.path.exists(alt_path):
+                    try:
+                        shutil.copy2(alt_path, dest)
+                        logger.info(f"Credentials found at {alt_path} and saved to {dest}")
+                        credentials_copied = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to copy from {alt_path}: {e}")
+
+        if credentials_copied:
+            await status_msg.edit_text("✅ Login successful! Credentials saved.")
         else:
-            await status_msg.edit_text("Login failed! No credentials file found.")
-            login_success = False
+            # 即使文件复制失败，如果检测到登录成功，仍然尝试后续流程
+            if login_success:
+                logger.warning("Login success detected but credentials file not found. RSSHub may still work if cookie was previously set.")
+                await status_msg.edit_text("⚠️ Login success detected but credentials file not found. If this is your first login, please try /login again.")
+            else:
+                await status_msg.edit_text("❌ Login failed! No credentials file found.")
 
         # ── 登录成功后：同步 Cookie 到 rsshub 并拉起容器 ──────────────────
-        if login_success:
+        # 只要检测到登录成功或成功复制了凭证文件，都尝试启动 RSSHub
+        if login_success or credentials_copied:
             await _post_login_start_rsshub(message)
 
     except Exception as e:
@@ -372,6 +408,20 @@ async def main():
                     "请确保 Docker 已安装且可用，或将 .env 中 API_URL 清空。"
                 )
                 sys.exit(1)
+            # TCP 端口开放不代表 HTTP API 就绪，等待最多 15 秒
+            import httpx
+            for i in range(15):
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        resp = await client.get(f"{API_URL.rstrip('/')}/getMe")
+                        if resp.status_code == 200:
+                            logger.info(f"✅ telegram-bot-api HTTP API 已就绪（等待 {i}s）")
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+            else:
+                logger.warning("⚠️  telegram-bot-api HTTP API 未就绪，继续尝试...")
         except ImportError as e:
             logger.critical(f"❌ 无法导入 start_api.py：{e}")
             sys.exit(1)
