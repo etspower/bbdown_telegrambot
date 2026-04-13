@@ -575,7 +575,9 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                                 cumulative = total_expected * 0.99
                             elif video_phase_done:
                                 # 视频已完成（正在下载音频），用预估视频大小作基准 + 当前音频扫描大小
-                                cumulative = video_size_estimate + current_file_size
+                                # 边界：video_size_estimate 未解析到时用 last_file_size（最后一次扫描的视频碎片大小）
+                                video_base = video_size_estimate if video_size_estimate > 0 else last_file_size
+                                cumulative = video_base + current_file_size
                             else:
                                 # video 阶段：当前文件大小
                                 cumulative = current_file_size
