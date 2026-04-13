@@ -511,7 +511,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 async def file_scan_loop():
                     """独立的文件扫描任务，不依赖 BBDown 输出"""
-                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done
+                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done, last_cumulative
                     
                     last_cumulative = 0.0  # 用于防止进度回退
                     
@@ -528,8 +528,10 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                         logger.debug(f"🔍 文件扫描: 大小={current_file_size:.1f}MB, 文件数={len(found_files)}, 预估={expected_total_size:.1f}MB, 阶段={current_phase}, video_done={video_phase_done}, video_est={video_size_estimate:.1f}MB")
                         
                         # 【关键】检测视频阶段结束：进入 audio 时标记 video_phase_done
+                        # 同时重置 last_cumulative，防止 video 阶段残留值（25MB）阻塞 audio 阶段进度
                         if current_phase == "audio" and not video_phase_done:
                             video_phase_done = True
+                            last_cumulative = 0  # 重置，新阶段从 video_size_estimate 开始
                             logger.info(f"🎯 进入音频阶段，video_size_estimate={video_size_estimate:.1f}MB 作为基准固定")
                         
                         # 处理空文件情况（音频刚开始时）
