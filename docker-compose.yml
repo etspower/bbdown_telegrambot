@@ -17,6 +17,12 @@ services:
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
     volumes:
       - ./data/telegram-api:/var/lib/telegram-bot-api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     ports:
       - "8081:8081"
     stop_grace_period: 10s
