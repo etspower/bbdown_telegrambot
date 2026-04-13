@@ -458,7 +458,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     # 第二步：分片已删除（合并阶段或音频下载期间），回退到扫描最大文件
                     # 但要排除已完成的大文件（视频合并完成后的mp4）
                     all_files = []
-                    exclude_names = {'.mp4', '.flv', '.mkv', '.avi'}
+                    exclude_names = {'.mp4', '.flv', '.mkv', '.avi', '.m4a'}
                     for search_dir in [dl_dir, dl_base]:
                         if not search_dir.exists():
                             continue
@@ -477,8 +477,8 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                     
                     if all_files:
                         all_files.sort(key=lambda x: x[1], reverse=True)
-                        largest = all_files[0][1]
-                        return largest, [f"{n}: {s:.1f}MB" for n, s in all_files]
+                        total_size = sum(s for _, s in all_files)
+                        return total_size, [f"{n}: {s:.1f}MB" for n, s in all_files]
                     
                     return 0.0, []
                 
