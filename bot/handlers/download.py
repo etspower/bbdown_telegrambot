@@ -511,7 +511,7 @@ async def start_multi_download(status_msg: types.Message, session: dict, pages: 
                 
                 async def file_scan_loop():
                     """独立的文件扫描任务，不依赖 BBDown 输出"""
-                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done, last_cumulative
+                    nonlocal last_file_size, download_active, expected_total_size, video_size_estimate, audio_size_estimate, current_phase, video_phase_done
                     
                     last_cumulative = 0.0  # 用于防止进度回退
                     
