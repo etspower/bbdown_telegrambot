@@ -1,3 +1,7 @@
+networks:
+  bbdown-net:
+    driver: bridge
+
 services:
   # Telegram Bot API Server (Local Mode)
   # Handles file uploads up to 4GB — required for sending downloaded videos
@@ -6,6 +10,8 @@ services:
     image: aiogram/telegram-bot-api:latest
     container_name: bbdown-telegram-api
     restart: unless-stopped
+    networks:
+      - bbdown-net
     environment:
       TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
@@ -21,6 +27,8 @@ services:
     image: diygod/rsshub:latest
     container_name: bbdown-rsshub
     restart: unless-stopped
+    networks:
+      - bbdown-net
     environment:
       - NODE_ENV=production
       # 禁用内置首页和健康检查页面（可选，减少暴露面积）
@@ -41,6 +49,8 @@ services:
       context: .
     container_name: bbdown-bot
     restart: unless-stopped
+    networks:
+      - bbdown-net
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -59,8 +69,8 @@ services:
     volumes:
       - ./data/bot:/app/data
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://telegram-api:8081')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
