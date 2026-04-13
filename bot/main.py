@@ -205,12 +205,16 @@ async def cmd_login(message: types.Message):
         
         # 如果 tmp 目录没找到，检查其他可能位置
         if not credentials_copied:
-            # 检查 BBDown 默认配置目录
+            # 检查 BBDown 默认配置目录，以及 BBDown 二进制所在目录
             home_dir = os.path.expanduser("~")
+            bbdown_path = get_bbdown_path()
+            bbdown_dir = os.path.dirname(bbdown_path) if bbdown_path else None
             possible_paths = [
                 os.path.join(home_dir, ".config", "BBDown", "BBDown.data"),
                 os.path.join(home_dir, "BBDown.data"),
             ]
+            if bbdown_dir:
+                possible_paths.insert(0, os.path.join(bbdown_dir, "BBDown.data"))
             for alt_path in possible_paths:
                 if os.path.exists(alt_path):
                     try:
@@ -409,19 +413,19 @@ async def main():
                 )
                 sys.exit(1)
             # TCP 端口开放不代表 HTTP API 就绪，等待最多 15 秒
-            import httpx
+            import socket
+            api_host = API_URL.rstrip('/').replace("http://", "").replace("https://", "").split(":")[0] or "localhost"
+            api_port = int(API_URL.rstrip('/').replace(f"http://{api_host}", "").replace(f"https://{api_host}", "").lstrip(":") or "8081")
             for i in range(15):
                 try:
-                    async with httpx.AsyncClient(timeout=3.0) as client:
-                        resp = await client.get(f"{API_URL.rstrip('/')}/getMe")
-                        if resp.status_code == 200:
-                            logger.info(f"✅ telegram-bot-api HTTP API 已就绪（等待 {i}s）")
-                            break
+                    with socket.create_connection((api_host, api_port), timeout=2):
+                        logger.info(f"✅ telegram-bot-api 端口已就绪（等待 {i}s）")
+                        break
                 except Exception:
                     pass
                 await asyncio.sleep(1)
             else:
-                logger.warning("⚠️  telegram-bot-api HTTP API 未就绪，继续尝试...")
+                logger.warning("⚠️  telegram-bot-api 端口未就绪，继续尝试...")
         except ImportError as e:
             logger.critical(f"❌ 无法导入 start_api.py：{e}")
             sys.exit(1)
