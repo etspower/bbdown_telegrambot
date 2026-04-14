@@ -148,42 +148,57 @@ async def cmd_login(message: types.Message):
 
     try:
         async def read_output():
-            nonlocal qr_sent, login_success
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                try:
-                    decoded_line = line.decode('utf-8').strip()
-                except UnicodeDecodeError:
-                    decoded_line = line.decode('gbk', errors='ignore').strip()
-                logger.info(f"[BBDown] {decoded_line}")
+            nonlocal qr_sent, login_success, process
+            try:
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    try:
+                        decoded_line = line.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        decoded_line = line.decode('gbk', errors='ignore').strip()
+                    logger.info(f"[BBDown] {decoded_line}")
 
-                if not qr_sent and "qrcode.png" in decoded_line:
-                    await asyncio.sleep(1)
-                    if os.path.exists(qr_file_path):
+                    if not qr_sent and "qrcode.png" in decoded_line:
+                        await asyncio.sleep(1)
+                        if os.path.exists(qr_file_path):
+                            try:
+                                from aiogram.types import FSInputFile
+                                photo = FSInputFile(qr_file_path)
+                                await message.answer_photo(
+                                    photo,
+                                    caption="请使用 B站 App 扫码登录（横屏扫码 / 电视扫码）"
+                                )
+                                await status_msg.edit_text("⏳ 请在 App 内确认登录，然后等待...")
+                                qr_sent = True
+                            except Exception as ex:
+                                logger.error(f"answer_photo error: {ex}")
+                                await status_msg.edit_text(f"Error sending QR: {ex}")
+
+                    # 检测到登录成功 → 立即终止进程（不等 BBDown 自己退出）
+                    if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
+                        login_success = True
                         try:
-                            from aiogram.types import FSInputFile
-                            photo = FSInputFile(qr_file_path)
-                            await message.answer_photo(photo, caption="Please scan this QR code with the Bilibili App (TV login).")
-                            await status_msg.edit_text("Waiting for scan confirmation...")
-                            qr_sent = True
-                        except Exception as ex:
-                            logger.error(f"EXCEPTION in answer_photo: {ex}", exc_info=True)
-                            await status_msg.edit_text(f"Error sending QR photo: {ex}")
-
-                # 检测到登录成功标记，但此时凭证文件可能还未写入
-                if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
-                    login_success = True
-                    try:
-                        await message.answer("✅ **Login Success detected!** Waiting for credentials file...", parse_mode="Markdown")
-                    except Exception:
-                        await message.answer("✅ Login Success detected! Waiting for credentials file...")
-                elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
-                    try:
-                        await message.answer("❌ **Login Failed/Expired.** Please try `/login` again.", parse_mode="Markdown")
-                    except Exception:
-                        await message.answer(f"❌ Login Failed: {decoded_line}")
+                            await message.answer("✅ **Login successful!** Saving credentials...")
+                        except Exception:
+                            await message.answer("✅ Login successful! Saving credentials...")
+                        # 等 1 秒让 BBDown 写完 BBDown.data，再杀进程
+                        await asyncio.sleep(1)
+                        try:
+                            process.terminate()
+                        except Exception:
+                            pass
+                        break
+                    elif "失效" in decoded_line or "失败" in decoded_line or "过期" in decoded_line:
+                        try:
+                            await message.answer("❌ 登录失败/二维码已过期，请重新发送 /login")
+                        except Exception:
+                            await message.answer(f"❌ Login: {decoded_line}")
+                        process.terminate()
+                        break
+            except Exception as e:
+                logger.warning(f"read_output inner error: {e}")
 
         try:
             await asyncio.wait_for(read_output(), timeout=180)
