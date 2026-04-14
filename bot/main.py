@@ -239,7 +239,11 @@ async def cmd_login(message: types.Message):
         # ── 登录成功后：同步 Cookie 到 rsshub 并拉起容器 ──────────────────
         # 只要检测到登录成功或成功复制了凭证文件，都尝试启动 RSSHub
         if login_success or credentials_copied:
-            await _post_login_start_rsshub(message, credentials_copied=credentials_copied)
+            if _is_docker_mode():
+                # docker 模式下 rsshub 由 docker-compose 管理，只同步 Cookie
+                await _docker_mode_sync(message, credentials_copied=credentials_copied)
+            else:
+                await _post_login_start_rsshub(message, credentials_copied=credentials_copied)
 
     except Exception as e:
         logger.exception("Login process error")
@@ -248,10 +252,30 @@ async def cmd_login(message: types.Message):
         _cleanup_login_dir(login_tmp_dir)
 
 
+async def _docker_mode_sync(message: types.Message, *, credentials_copied: bool):
+    """Docker 模式：rsshub 由 docker-compose 管理，只需同步 Cookie。"""
+    if not credentials_copied:
+        await message.answer("⚠️ 凭证未保存，无法同步 Cookie")
+        return
+    try:
+        from bot.rsshub_manager import sync_cookie_to_rsshub
+        await message.answer("🔄 正在同步 Cookie 到 RSSHub...")
+        ok = await sync_cookie_to_rsshub()
+        if ok:
+            await message.answer("✅ Cookie 同步完成！请手动执行：\n`docker compose restart rsshub`\n以让 RSSHub 加载新 Cookie。", parse_mode="Markdown")
+        else:
+            await message.answer("⚠️ Cookie 同步失败，请检查 RSSHub 容器状态")
+    except Exception as e:
+        logger.exception("_docker_mode_sync error")
+        await message.answer(f"⚠️ Cookie 同步异常：{e}")
+
+
 async def _post_login_start_rsshub(message: types.Message, *, credentials_copied: bool):
     """登录成功后同步 Cookie 到 RSSHub，然后拉起/重启 rsshub 容器。
 
     通过 HTTP API 推送 Cookie，无需读写 env_file 或重启容器。
+    本函数仅用于本地调试模式（_is_docker_mode() == False）。
+    Docker 模式使用 _docker_mode_sync()。
     """
     notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub...")
     try:

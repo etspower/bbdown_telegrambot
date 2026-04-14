@@ -16,8 +16,9 @@ RUN apt-get update \
     && unzip -o /tmp/bbdown.zip -d /tmp/bbdown \
     && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown.real \
     && chmod +x /usr/local/bin/BBDown.real \
-    # Wrapper: 强制 HOME 和 cwd 为 /app/data，防止 BBDown 写到自身所在目录
-    && printf '#!/bin/sh\nmkdir -p /app/data/.bbdown_home\nexport HOME=/app/data/.bbdown_home\ncd /app/data\nexec /usr/local/bin/BBDown.real "$@"\n' > /usr/local/bin/BBDown \
+    # Wrapper: 强制 HOME 为 /app/data/.bbdown_home，但不改变 cwd（保持 subprocess 传入的 cwd 有效），
+    # 这样 BBDown login 时 qrcode.png 写到 subprocess 的 cwd 里，cmd_login 可以直接找到
+    && printf '#!/bin/sh\nmkdir -p /app/data/.bbdown_home\nexport HOME=/app/data/.bbdown_home\nexec /usr/local/bin/BBDown.real "$@"\n' > /usr/local/bin/BBDown \
     && chmod +x /usr/local/bin/BBDown \
     && rm -rf /tmp/bbdown.zip /tmp/bbdown
 
