@@ -176,15 +176,29 @@ async def cmd_login(message: types.Message):
                                 logger.error(f"answer_photo error: {ex}")
                                 await status_msg.edit_text(f"Error sending QR: {ex}")
 
-                    # 检测到登录成功 → 立即终止进程（不等 BBDown 自己退出）
-                    if ("成功" in decoded_line and "qrcode.png" not in decoded_line) or "SESSDATA=" in decoded_line:
+                    # 检测到登录成功 → 等待 BBDown 写完凭证再终止进程
+                    # 注意："扫码成功, 请确认..." 是扫码成功，用户还需要在 App 里确认
+                    # 真正的登录成功会输出 SESSDATA 或 "登录成功"
+                    if "SESSDATA=" in decoded_line:
                         login_success = True
                         try:
                             await message.answer("✅ **Login successful!** Saving credentials...")
                         except Exception:
                             await message.answer("✅ Login successful! Saving credentials...")
-                        # 等 1 秒让 BBDown 写完 BBDown.data，再杀进程
-                        await asyncio.sleep(1)
+                        # 等 2 秒让 BBDown 写完 BBDown.data，再杀进程
+                        await asyncio.sleep(2)
+                        try:
+                            process.terminate()
+                        except Exception:
+                            pass
+                        break
+                    elif "登录成功" in decoded_line:
+                        login_success = True
+                        try:
+                            await message.answer("✅ **Login successful!** Saving credentials...")
+                        except Exception:
+                            await message.answer("✅ Login successful! Saving credentials...")
+                        await asyncio.sleep(2)
                         try:
                             process.terminate()
                         except Exception:
