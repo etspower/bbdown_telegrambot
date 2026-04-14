@@ -2,7 +2,7 @@
 RSSHub 容器管理与 Cookie 同步模块
 
 职责：
-1. sync_cookie_to_rsshub()  — 从 BBDown.data 提取登录凭证，写入 rsshub.env
+1. sync_cookie_to_rsshub()  — 从 BBDown.data 提取登录凭证，通过 HTTP API 推送到 rsshub
 2. ensure_rsshub_running()  — 检测 rsshub 容器状态，未运行时自动拉起
 3. is_logged_in()           — 检测 BBDown.data 是否存在且含有 SESSDATA
 
@@ -13,19 +13,16 @@ RSSHub 容器管理与 Cookie 同步模块
 
 import asyncio
 import logging
-import os
 import re
 from pathlib import Path
 
-from bot.config import DATA_DIR
+import aiohttp
+
+from bot.config import DATA_DIR, RSSHUB_BASE_URL
 
 logger = logging.getLogger(__name__)
 
-# RSSHub Cookie 环境文件路径
-# 写到项目根目录（compose 里所有容器共享此目录）
-# 注意：不要写到 ./data/bot（只有 bbdown-bot 能访问）
 _PROJECT_ROOT = Path(__file__).parent.parent
-RSSHUB_ENV_FILE = _PROJECT_ROOT / "rsshub.env"
 
 # docker compose 命令（支持新旧两种写法）
 _COMPOSE_CMD: list[str] | None = None
@@ -68,14 +65,14 @@ def is_logged_in() -> bool:
 
 async def sync_cookie_to_rsshub() -> bool:
     """
-    从 BBDown.data 提取登录凭证，写入 rsshub.env。
+    从 BBDown.data 提取登录凭证，通过 RSSHub 运行时 API 推送。
 
-    rsshub.env 格式（被 docker-compose.yml env_file 引用）：
-        BILIBILI_COOKIE_<UID>=SESSDATA=xxx;buvid3=xxx;DedeUserID=xxx
+    API: POST /api/update-cookiersskey
+    Body: {"cookie": "SESSDATA=xxx;buvid3=xxx", "uid": "12345"}
 
     Returns:
-        True  — 成功写入（含有效 SESSDATA）
-        False — 未找到凭证或写入失败
+        True  — 成功推送（含有效 SESSDATA）
+        False — 未找到凭证或推送失败
     """
     data_file = Path(DATA_DIR) / "BBDown.data"
     if not data_file.exists():
@@ -95,7 +92,7 @@ async def sync_cookie_to_rsshub() -> bool:
         return False
     sessdata = m_sess.group(1)
 
-    # 提取 DedeUserID（自己账号 UID）
+    # 提取 DedeUserID
     m_uid = re.search(r"DedeUserID=([^;&\s]+)", content)
     uid = m_uid.group(1) if m_uid else "0"
 
@@ -107,7 +104,7 @@ async def sync_cookie_to_rsshub() -> bool:
         buvid3_file = Path(DATA_DIR) / ".buvid3"
         buvid3 = buvid3_file.read_text().strip() if buvid3_file.exists() else ""
 
-    # 提取 bili_jct（CSRF token，部分接口需要）
+    # 提取 bili_jct
     m_jct = re.search(r"bili_jct=([^;&\s]+)", content)
     bili_jct = m_jct.group(1) if m_jct else ""
 
@@ -119,14 +116,29 @@ async def sync_cookie_to_rsshub() -> bool:
         parts.append(f"bili_jct={bili_jct}")
     cookie_str = ";".join(parts)
 
-    env_line = f"BILIBILI_COOKIE_{uid}={cookie_str}\n"
+    # 通过 HTTP API 推送到 rsshub
+    api_url = f"{RSSHUB_BASE_URL}/api/update-cookiersskey"
+    payload = {"cookie": cookie_str, "uid": uid}
 
     try:
-        RSSHUB_ENV_FILE.write_text(env_line, encoding="utf-8")
-        logger.info(f"rsshub.env written: BILIBILI_COOKIE_{uid} (SESSDATA={sessdata[:8]}...)")
-        return True
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(api_url, json=payload) as resp:
+                if resp.status == 200:
+                    logger.info(
+                        f"Cookie pushed to rsshub: uid={uid}, "
+                        f"SESSDATA={sessdata[:8]}..., status={resp.status}"
+                    )
+                    return True
+                else:
+                    body = await resp.text()
+                    logger.warning(f"rsshub cookie api returned {resp.status}: {body[:200]}")
+                    return False
+    except asyncio.TimeoutError:
+        logger.warning("sync_cookie_to_rsshub: rsshub timeout (not running?)")
+        return False
     except Exception as e:
-        logger.error(f"sync_cookie_to_rsshub: write rsshub.env failed: {e}")
+        logger.warning(f"sync_cookie_to_rsshub: http push failed: {e}")
         return False
 
 
@@ -151,36 +163,20 @@ async def ensure_rsshub_running() -> tuple[bool, str]:
     确保 rsshub 容器正在运行。
 
     执行顺序：
-    1. 同步 Cookie → rsshub.env
+    1. 同步 Cookie → rsshub HTTP API
     2. docker compose up -d rsshub
 
     Returns:
         (success: bool, message: str)
     """
-    # 1. 先同步 Cookie
+    # 1. 先同步 Cookie（rsshub 还没起来就跳过）
     cookie_ok = await sync_cookie_to_rsshub()
     if not cookie_ok:
-        msg = "⚠️ rsshub 已尝试启动，但未找到 B 站登录凭证，订阅功能可能无法正常工作。"
-        logger.warning(msg)
-        # 仍然继续尝试启动容器（可能之前已有 rsshub.env）
+        logger.warning("rsshub cookie sync skipped (not logged in or rsshub not ready)")
 
     # 2. 检测是否已在运行
     if await _is_rsshub_container_running():
         logger.info("rsshub container already running, skip start")
-        if cookie_ok:
-            # Cookie 已更新，重启使其生效
-            compose_cmd = await _get_compose_cmd()
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *compose_cmd, "restart", "rsshub",
-                    cwd=str(_PROJECT_ROOT),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=30)
-                logger.info("rsshub restarted to apply new cookie")
-            except Exception as e:
-                logger.warning(f"rsshub restart failed: {e}")
         return True, "✅ RSSHub 已在运行"
 
     # 3. 拉起容器
@@ -209,6 +205,9 @@ async def ensure_rsshub_running() -> tuple[bool, str]:
             await asyncio.sleep(2)
             if await _is_rsshub_container_running():
                 logger.info("rsshub container started successfully")
+                # 容器起来后再推一次 cookie
+                await asyncio.sleep(3)
+                await sync_cookie_to_rsshub()
                 return True, "✅ RSSHub 已成功启动"
 
         return False, "⚠️ RSSHub 容器已创建但未进入 running 状态，请稍后用 docker ps 检查"

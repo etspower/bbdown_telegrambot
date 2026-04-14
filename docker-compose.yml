@@ -48,10 +48,6 @@ services:
     # 内部网络不映射宿主机端口。若需宿主机直接访问调试，可启用下方注释:
     # ports:
     #   - "1200:1200"
-    volumes:
-      - ./rsshub.env:/app/rsshub.env:ro
-    env_file:
-      - /app/rsshub.env
 
   # BBDown Telegram Bot
   bbdown-bot:
