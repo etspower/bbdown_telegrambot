@@ -14,7 +14,10 @@ RUN apt-get update \
     && wget -q https://github.com/nilaoda/BBDown/releases/download/1.6.3/BBDown_1.6.3_20240814_linux-x64.zip \
         -O /tmp/bbdown.zip \
     && unzip -o /tmp/bbdown.zip -d /tmp/bbdown \
-    && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown \
+    && mv /tmp/bbdown/BBDown /usr/local/bin/BBDown.real \
+    && chmod +x /usr/local/bin/BBDown.real \
+    # Wrapper: 强制 HOME 和 cwd 为 /app/data，防止 BBDown 写到自身所在目录
+    && printf '#!/bin/sh\nmkdir -p /app/data/.bbdown_home\nexport HOME=/app/data/.bbdown_home\ncd /app/data\nexec /usr/local/bin/BBDown.real "$@"\n' > /usr/local/bin/BBDown \
     && chmod +x /usr/local/bin/BBDown \
     && rm -rf /tmp/bbdown.zip /tmp/bbdown
 

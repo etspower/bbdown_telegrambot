@@ -71,10 +71,8 @@ services:
       - API_URL=http://telegram-api:8081
       - BBDOWN_PATH=/usr/local/bin/BBDown
       - RSSHUB_BASE_URL=http://rsshub:1200
-      # DATA_DIR auto-resolves to /app/data (project-root relative), no need to set here
     volumes:
       - ./data/bot:/app/data
-      - ./rsshub.env:/app/rsshub.env
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
       interval: 30s

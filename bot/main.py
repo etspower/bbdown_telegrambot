@@ -224,7 +224,7 @@ async def cmd_login(message: types.Message):
         # ── 登录成功后：同步 Cookie 到 rsshub 并拉起容器 ──────────────────
         # 只要检测到登录成功或成功复制了凭证文件，都尝试启动 RSSHub
         if login_success or credentials_copied:
-            await _post_login_start_rsshub(message)
+            await _post_login_start_rsshub(message, credentials_copied=credentials_copied)
 
     except Exception as e:
         logger.exception("Login process error")
@@ -233,38 +233,27 @@ async def cmd_login(message: types.Message):
         _cleanup_login_dir(login_tmp_dir)
 
 
-async def _post_login_start_rsshub(message: types.Message):
-    """登录成功后同步 Cookie 到 RSSHub。
+async def _post_login_start_rsshub(message: types.Message, *, credentials_copied: bool):
+    """登录成功后同步 Cookie 到 RSSHub，然后拉起/重启 rsshub 容器。
 
-    运行模式由环境变量 BOT_RUN_MODE 控制：
-    - local (默认)：python bot/main.py 直接运行，同步 Cookie 后自动执行
-                         docker compose up rsshub 拉起/重启容器。
-    - docker：全容器化部署，同步 Cookie 后提示手动重启 rsshub 容器。
+    通过 HTTP API 推送 Cookie，无需读写 env_file 或重启容器。
     """
     notify = await message.answer("🔄 正在同步 B 站凭证到 RSSHub...")
     try:
-        from bot.rsshub_manager import sync_cookie_to_rsshub
-        logger.info("开始同步 B 站 Cookie 到 rsshub.env...")
+        from bot.rsshub_manager import sync_cookie_to_rsshub, ensure_rsshub_running
+        logger.info("开始同步 B 站 Cookie 到 rsshub...")
         ok = await sync_cookie_to_rsshub()
-        if ok:
-            logger.info("Cookie 已成功写入 rsshub.env")
-            if _is_docker_mode():
-                # 全容器模式：Bot 容器无法直接重启兄弟容器，提示用户手动重启
-                logger.info("全容器模式：Cookie 已写入，请手动重启 rsshub 容器")
-                await notify.edit_text(
-                    "✅ B 站凭证已同步到 rsshub.env 文件。\n"
-                    "⚠️ 请在服务器终端手动执行以下命令使其生效：\n"
-                    "`docker compose restart rsshub`"
-                )
-            else:
-                # 本地调试模式：自动通过 docker compose up 拉起 rsshub 容器
-                from bot.rsshub_manager import ensure_rsshub_running
-                success, msg = await ensure_rsshub_running()
-                logger.info(f"RSSHub 容器启动结果: {msg}")
-                await notify.edit_text(f"RSSHub: {msg}")
+        if not ok:
+            logger.warning("Cookie 推送失败（rsshub 未启动或凭证提取失败）")
+
+        success, msg = await ensure_rsshub_running()
+        logger.info(f"RSSHub: {msg}")
+        if ok and success:
+            await notify.edit_text(f"✅ 登录成功！Cookie 已同步，RSSHub: {msg}")
+        elif ok:
+            await notify.edit_text(f"✅ Cookie 已同步，但 RSSHub {msg}")
         else:
-            logger.error("sync_cookie_to_rsshub 返回 False，Cookie 写入失败")
-            await notify.edit_text("⚠️ 凭证写入 rsshub.env 失败，请检查文件路径与权限。")
+            await notify.edit_text(f"⚠️ Cookie 同步失败（凭证未写入），请确认 /login 已完成后再试")
     except Exception as e:
         logger.exception("_post_login_start_rsshub error")
         await notify.edit_text(f"⚠️ RSSHub 同步时发生异常：{e}")
