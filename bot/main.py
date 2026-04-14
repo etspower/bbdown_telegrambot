@@ -145,10 +145,11 @@ async def cmd_login(message: types.Message):
     qr_sent = False
     login_success = False
     credentials_copied = False
+    sessdata_captured: str | None = None  # 从 BBDown 输出直接提取的 SESSDATA
 
     try:
         async def read_output():
-            nonlocal qr_sent, login_success, process
+            nonlocal qr_sent, login_success, sessdata_captured, process
             try:
                 while True:
                     line = await process.stdout.readline()
@@ -176,17 +177,20 @@ async def cmd_login(message: types.Message):
                                 logger.error(f"answer_photo error: {ex}")
                                 await status_msg.edit_text(f"Error sending QR: {ex}")
 
-                    # 检测到登录成功 → 等待 BBDown 写完凭证再终止进程
-                    # 注意："扫码成功, 请确认..." 是扫码成功，用户还需要在 App 里确认
-                    # 真正的登录成功会输出 SESSDATA 或 "登录成功"
+                    # 检测到登录成功 → 从 stdout 直接提取 SESSDATA 推给 rsshub（无需读文件）
                     if "SESSDATA=" in decoded_line:
                         login_success = True
+                        # 提取 SESSDATA=后面的值（BBDown 输出格式：SESSDATA=xxx,时间戳,...）
+                        m = re.search(r'SESSDATA=([a-f0-9*,]+)', decoded_line)
+                        if m:
+                            sessdata_captured = m.group(1)
+                            logger.info(f"SESSDATA captured from stdout: {sessdata_captured[:8]}...")
                         try:
                             await message.answer("✅ **Login successful!** Saving credentials...")
                         except Exception:
                             await message.answer("✅ Login successful! Saving credentials...")
-                        # 等 2 秒让 BBDown 写完 BBDown.data，再杀进程
-                        await asyncio.sleep(2)
+                        # 不再等 BBDown 写文件，直接终止进程（凭证已从 stdout 拿到）
+                        await asyncio.sleep(0.5)
                         try:
                             process.terminate()
                         except Exception:
@@ -198,7 +202,7 @@ async def cmd_login(message: types.Message):
                             await message.answer("✅ **Login successful!** Saving credentials...")
                         except Exception:
                             await message.answer("✅ Login successful! Saving credentials...")
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(0.5)
                         try:
                             process.terminate()
                         except Exception:
@@ -254,8 +258,8 @@ async def cmd_login(message: types.Message):
         # 只要检测到登录成功或成功复制了凭证文件，都尝试启动 RSSHub
         if login_success or credentials_copied:
             if _is_docker_mode():
-                # docker 模式下 rsshub 由 docker-compose 管理，只同步 Cookie
-                await _docker_mode_sync(message, credentials_copied=credentials_copied)
+                # docker 模式下 rsshub 由 docker-compose 管理，SESSDATA 从 stdout 直接拿到
+                await _docker_mode_sync(message, sessdata_captured=sessdata_captured)
             else:
                 await _post_login_start_rsshub(message, credentials_copied=credentials_copied)
 
@@ -266,15 +270,18 @@ async def cmd_login(message: types.Message):
         _cleanup_login_dir(login_tmp_dir)
 
 
-async def _docker_mode_sync(message: types.Message, *, credentials_copied: bool):
-    """Docker 模式：rsshub 由 docker-compose 管理，只需同步 Cookie。"""
-    if not credentials_copied:
-        await message.answer("⚠️ 凭证未保存，无法同步 Cookie")
-        return
+async def _docker_mode_sync(message: types.Message, *, sessdata_captured: str | None):
+    """Docker 模式：rsshub 由 docker-compose 管理，从 stdout 直接推 SESSDATA。"""
     try:
-        from bot.rsshub_manager import sync_cookie_to_rsshub
+        from bot.rsshub_manager import sync_sessdata_to_rsshub, sync_cookie_to_rsshub
         await message.answer("🔄 正在同步 Cookie 到 RSSHub...")
-        ok = await sync_cookie_to_rsshub()
+        ok = False
+        if sessdata_captured:
+            # 优先用 stdout 里直接拿到的 SESSDATA（绕过 BBDown.data 文件）
+            ok = await sync_sessdata_to_rsshub(sessdata=sessdata_captured, uid="0")
+        if not ok:
+            # 兜底：从 BBDown.data 文件读（可能之前已保存过）
+            ok = await sync_cookie_to_rsshub()
         if ok:
             await message.answer("✅ Cookie 同步完成！请手动执行：\n`docker compose restart rsshub`\n以让 RSSHub 加载新 Cookie。", parse_mode="Markdown")
         else:

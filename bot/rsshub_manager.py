@@ -63,12 +63,36 @@ def is_logged_in() -> bool:
         return False
 
 
+async def sync_sessdata_to_rsshub(sessdata: str, uid: str = "0") -> bool:
+    """
+    直接推送 SESSDATA 到 RSSHub 运行时 Cookie API。
+    BBDown login 成功后，SESSDATA 在 stdout 中，不需要读文件。
+
+    API: POST /api/update-cookiersskey
+    Body: {"cookie": "SESSDATA=xxx", "uid": "12345"}
+    """
+    cookie_str = f"SESSDATA={sessdata};DedeUserID={uid}"
+    api_url = f"{RSSHUB_BASE_URL}/api/update-cookiersskey"
+    payload = {"cookie": cookie_str, "uid": uid}
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(api_url, json=payload) as resp:
+                if resp.status == 200:
+                    logger.info(f"SESSDATA pushed to rsshub: uid={uid}, SESSDATA={sessdata[:8]}...")
+                    return True
+                else:
+                    body = await resp.text()
+                    logger.warning(f"rsshub cookie api returned {resp.status}: {body[:200]}")
+                    return False
+    except Exception as e:
+        logger.warning(f"sync_sessdata_to_rsshub failed: {e}")
+        return False
+
+
 async def sync_cookie_to_rsshub() -> bool:
     """
     从 BBDown.data 提取登录凭证，通过 RSSHub 运行时 API 推送。
-
-    API: POST /api/update-cookiersskey
-    Body: {"cookie": "SESSDATA=xxx;buvid3=xxx", "uid": "12345"}
 
     Returns:
         True  — 成功推送（含有效 SESSDATA）

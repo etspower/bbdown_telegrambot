@@ -27,6 +27,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Step 3: Bot source
+COPY start_api.py .
 COPY bot/ ./bot/
 
 # Run as non-root user
