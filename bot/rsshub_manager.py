@@ -21,10 +21,10 @@ from bot.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-# 项目根目录（bot/ 的上一层）
+# RSSHub Cookie 环境文件路径
+# 写到项目根目录（compose 里所有容器共享此目录）
+# 注意：不要写到 ./data/bot（只有 bbdown-bot 能访问）
 _PROJECT_ROOT = Path(__file__).parent.parent
-
-# RSSHub Cookie 环境文件路径（docker compose env_file 读取）
 RSSHUB_ENV_FILE = _PROJECT_ROOT / "rsshub.env"
 
 # docker compose 命令（支持新旧两种写法）

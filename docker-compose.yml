@@ -48,6 +48,10 @@ services:
     # 内部网络不映射宿主机端口。若需宿主机直接访问调试，可启用下方注释:
     # ports:
     #   - "1200:1200"
+    volumes:
+      - ./rsshub.env:/app/rsshub.env:ro
+    env_file:
+      - /app/rsshub.env
 
   # BBDown Telegram Bot
   bbdown-bot:
@@ -74,6 +78,7 @@ services:
       # DATA_DIR auto-resolves to /app/data (project-root relative), no need to set here
     volumes:
       - ./data/bot:/app/data
+      - ./rsshub.env:/app/rsshub.env
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
       interval: 30s
